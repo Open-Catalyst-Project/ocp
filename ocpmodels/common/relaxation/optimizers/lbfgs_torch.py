@@ -148,6 +148,9 @@ class LBFGS:
         forces: Optional[torch.Tensor],
         update_mask: torch.Tensor,
     ):
+        def _batched_dot(x: torch.Tensor, y: torch.Tensor):
+            return scatter((x * y).sum(dim=-1), self.batch.batch, reduce="sum")
+
         def determine_step(dr):
             steplengths = torch.norm(dr, dim=1)
             longest_steps = scatter(
@@ -168,29 +171,32 @@ class LBFGS:
 
         # Update s, y, rho
         if iteration > 0:
-            s0 = (r - self.r0).flatten()
+            s0 = r - self.r0
             self.s.append(s0)
 
-            y0 = -(forces - self.f0).flatten()
+            y0 = -(forces - self.f0)
             self.y.append(y0)
 
-            self.rho.append(1.0 / torch.dot(y0, s0))
+            self.rho.append(1.0 / _batched_dot(y0, s0))
 
         loopmax = min(self.memory, iteration)
-        alpha = forces.new_empty(loopmax)
-        q = -forces.flatten()
+        alpha = forces.new_empty(loopmax, self.batch.natoms.shape[0])
+        q = -forces
 
         for i in range(loopmax - 1, -1, -1):
-            alpha[i] = self.rho[i] * torch.dot(self.s[i], q)  # b
-            q -= alpha[i] * self.y[i]
+            alpha[i] = self.rho[i] * _batched_dot(self.s[i], q)  # b
+            q -= alpha[i][self.batch.batch, ..., None] * self.y[i]
 
         z = self.H0 * q
         for i in range(loopmax):
-            beta = self.rho[i] * torch.dot(self.y[i], z)
-            z += self.s[i] * (alpha[i] - beta)
+            beta = self.rho[i] * _batched_dot(self.y[i], z)
+            z += self.s[i] * (
+                alpha[i][self.batch.batch, ..., None]
+                - beta[self.batch.batch, ..., None]
+            )
 
         # descent direction
-        p = -z.reshape((-1, 3))
+        p = -z
         dr = determine_step(p)
         if torch.abs(dr).max() < 1e-7:
             # Same configuration again (maybe a restart):
