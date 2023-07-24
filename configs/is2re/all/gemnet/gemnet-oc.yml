@@ -1,0 +1,80 @@
+includes:
+  - configs/is2re/all/base.yml
+
+model:
+  name: gemnet_oc
+  num_spherical: 7
+  num_radial: 128
+  num_blocks: 4
+  emb_size_atom: 256
+  emb_size_edge: 512
+  emb_size_trip_in: 64
+  emb_size_trip_out: 64
+  emb_size_quad_in: 32
+  emb_size_quad_out: 32
+  emb_size_aint_in: 64
+  emb_size_aint_out: 64
+  emb_size_rbf: 16
+  emb_size_cbf: 16
+  emb_size_sbf: 32
+  num_before_skip: 2
+  num_after_skip: 2
+  num_concat: 1
+  num_atom: 3
+  num_output_afteratom: 3
+  cutoff: 12.0
+  cutoff_qint: 12.0
+  cutoff_aeaint: 12.0
+  cutoff_aint: 12.0
+  max_neighbors: 20
+  max_neighbors_qint: 8
+  max_neighbors_aeaint: 20
+  max_neighbors_aint: 1000
+  rbf:
+    name: gaussian
+  envelope:
+    name: polynomial
+    exponent: 5
+  cbf:
+    name: spherical_harmonics
+  sbf:
+    name: legendre_outer
+  extensive: True
+  output_init: HeOrthogonal
+  activation: silu
+  scale_file: configs/s2ef/all/gemnet/scaling_factors/gemnet-oc.pt
+
+  regress_forces: False
+  direct_forces: False
+  forces_coupled: False
+
+  quad_interaction: True
+  atom_edge_interaction: True
+  edge_atom_interaction: True
+  atom_interaction: True
+
+  num_atom_emb_layers: 2
+  num_global_out_layers: 2
+  qint_tags: [1, 2]
+  use_pbc: True
+  otf_graph: True
+  le_emb: True
+  le_cutoff: 4.0
+
+optim:
+  batch_size: 16
+  eval_batch_size: 16
+  load_balancing: atoms
+  eval_every: 5000
+  num_workers: 2
+  lr_initial: 1.e-4
+  scheduler: ReduceLROnPlateau
+  mode: min
+  factor: 0.8
+  patience: 3
+  max_epochs: 80
+  energy_coefficient: 1
+  ema_decay: 0.999
+  clip_grad_norm: 10
+  loss_energy: mae
+  weight_decay: 0  # 2e-6 (TF weight decay) / 1e-4 (lr) = 2e-2

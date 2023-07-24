@@ -1,7 +1,21 @@
+An implementation of the Local Environment Pooling (LEPool) method [[`paper`](https://doi.org/10.1016/j.comptc.2023.114161)]. We only implemented LEPool for SchNet and GemNet-OC here, for demonstration purpose.
+
+
+For SchNet, LEPool provides an improvement of ~0.04 eV in MAE value for the IS2RE task.
+<div align="left">
+    <img src="schnet.png" width=500px>
+</div>
+
+For GemNet-OC, LEPool provides an improvement of ~0.01 eV in MAE value for the IS2RE task.
+<div align="left">
+    <img src="gemnet_oc.png" width=500px>
+</div>
+
 # `ocp` by Open Catalyst Project
 
 [![CircleCI](https://circleci.com/gh/Open-Catalyst-Project/ocp.svg?style=shield)](https://circleci.com/gh/Open-Catalyst-Project/ocp)
 [![codecov](https://codecov.io/gh/Open-Catalyst-Project/ocp/branch/codecov/graph/badge.svg?token=M606LH5LK6)](https://codecov.io/gh/Open-Catalyst-Project/ocp)
+
 
 `ocp` is the [Open Catalyst Project](https://opencatalystproject.org/)'s
 library of state-of-the-art machine learning algorithms for catalysis.
@@ -30,7 +44,6 @@ Projects developed on `ocp`:
 - GemNet-OC [[`arXiv`](https://arxiv.org/abs/2204.02782)] [[`code`](https://github.com/Open-Catalyst-Project/ocp/tree/main/ocpmodels/models/gemnet_oc)]
 - SCN [[`arXiv`](https://arxiv.org/abs/2206.14331)] [[`code`](https://github.com/Open-Catalyst-Project/ocp/tree/main/ocpmodels/models/scn)]
 - eSCN [[`arXiv`](https://arxiv.org/abs/2302.03655)] [[`code`](https://github.com/Open-Catalyst-Project/ocp/tree/main/ocpmodels/models/escn)]
-- EquiformerV2 [[`arXiv`](https://arxiv.org/abs/2306.12059)] [[`code`](https://github.com/Open-Catalyst-Project/ocp/tree/main/ocpmodels/models/equiformer_v2)]
 
 ## Installation
 

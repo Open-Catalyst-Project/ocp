@@ -10,7 +10,11 @@ from torch_geometric.nn import SchNet
 from torch_scatter import scatter
 
 from ocpmodels.common.registry import registry
-from ocpmodels.common.utils import conditional_grad
+from ocpmodels.common.utils import (
+    conditional_grad,
+    get_pbc_distances,
+    radius_graph_pbc,
+)
 from ocpmodels.models.base import BaseModel
 
 
@@ -64,7 +68,9 @@ class SchNetWrap(SchNet, BaseModel):
         num_gaussians=50,
         cutoff=10.0,
         readout="add",
-    ) -> None:
+        le_emb = False,
+        le_cutoff = 5.0,
+    ):
         self.num_targets = num_targets
         self.regress_forces = regress_forces
         self.use_pbc = use_pbc
@@ -72,6 +78,8 @@ class SchNetWrap(SchNet, BaseModel):
         self.otf_graph = otf_graph
         self.max_neighbors = 50
         self.reduce = readout
+        self.le_emb = le_emb
+        self.le_cutoff = le_cutoff
         super(SchNetWrap, self).__init__(
             hidden_channels=hidden_channels,
             num_filters=num_filters,
@@ -110,7 +118,18 @@ class SchNetWrap(SchNet, BaseModel):
             h = self.lin2(h)
 
             batch = torch.zeros_like(z) if batch is None else batch
-            energy = scatter(h, batch, dim=0, reduce=self.reduce)
+            if self.le_emb == True:
+                ads_idxs = torch.where(data.tags == 2)[0]
+                le_edge_idxs = torch.where(torch.isin(edge_index[0], ads_idxs))[0]
+                in_le_mask = edge_weight[le_edge_idxs] < self.le_cutoff
+                le_edge_idxs  = le_edge_idxs[in_le_mask]
+                le_node_idxs = edge_index[1, le_edge_idxs]
+                le_node_idxs = torch.unique(torch.cat((le_node_idxs, ads_idxs), dim=0))
+                le_batch = batch[le_node_idxs]
+                energy = scatter(h[le_node_idxs], le_batch, dim=0, reduce=self.reduce)
+            else:
+                energy = scatter(h, batch, dim=0, reduce=self.reduce)
+            
         else:
             energy = super(SchNetWrap, self).forward(z, pos, batch)
         return energy
@@ -134,5 +153,5 @@ class SchNetWrap(SchNet, BaseModel):
             return energy
 
     @property
-    def num_params(self) -> int:
+    def num_params(self):
         return sum(p.numel() for p in self.parameters())

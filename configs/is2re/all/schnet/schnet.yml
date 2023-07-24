@@ -10,6 +10,8 @@ model:
   cutoff: 6.0
   use_pbc: True
   regress_forces: False
+  le_emb: True
+  le_cutoff: 3.0
 
 # *** Important note ***
 #   The total number of gpus used for this run was 4.

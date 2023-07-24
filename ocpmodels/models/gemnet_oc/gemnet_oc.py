@@ -5,16 +5,21 @@ LICENSE file in the root directory of this source tree.
 """
 
 import logging
-from typing import Dict, Optional, Union
+import os
+from typing import Optional
 
 import numpy as np
 import torch
-from torch_scatter import segment_coo
+from torch_geometric.nn import radius_graph
+from torch_scatter import scatter, segment_coo
 
 from ocpmodels.common.registry import registry
 from ocpmodels.common.utils import (
+    compute_neighbors,
     conditional_grad,
     get_max_neighbors_mask,
+    get_pbc_distances,
+    radius_graph_pbc,
     scatter_det,
 )
 from ocpmodels.models.base import BaseModel
@@ -219,14 +224,11 @@ class GemNetOC(BaseModel):
         max_neighbors_aeaint: Optional[int] = None,
         max_neighbors_aint: Optional[int] = None,
         enforce_max_neighbors_strictly: bool = True,
-        rbf: Dict[str, str] = {"name": "gaussian"},
+        rbf: dict = {"name": "gaussian"},
         rbf_spherical: Optional[dict] = None,
-        envelope: Dict[str, Union[str, int]] = {
-            "name": "polynomial",
-            "exponent": 5,
-        },
-        cbf: Dict[str, str] = {"name": "spherical_harmonics"},
-        sbf: Dict[str, str] = {"name": "spherical_harmonics"},
+        envelope: dict = {"name": "polynomial", "exponent": 5},
+        cbf: dict = {"name": "spherical_harmonics"},
+        sbf: dict = {"name": "spherical_harmonics"},
         extensive: bool = True,
         forces_coupled: bool = False,
         output_init: str = "HeOrthogonal",
@@ -240,8 +242,10 @@ class GemNetOC(BaseModel):
         num_elements: int = 83,
         otf_graph: bool = False,
         scale_file: Optional[str] = None,
+        le_emb = False,
+        le_cutoff = 6.0, 
         **kwargs,  # backwards compatibility with deprecated arguments
-    ) -> None:
+    ):
         super().__init__()
         if len(kwargs) > 0:
             logging.warning(f"Unrecognized arguments: {list(kwargs.keys())}")
@@ -273,6 +277,9 @@ class GemNetOC(BaseModel):
         self.forces_coupled = forces_coupled
         self.regress_forces = regress_forces
         self.force_scaler = ForceScaler(enabled=scale_backprop_forces)
+
+        self.le_emb = le_emb
+        self.le_cutoff = le_cutoff
 
         self.init_basis_functions(
             num_radial,
@@ -345,7 +352,8 @@ class GemNetOC(BaseModel):
                 emb_size_atom,
                 activation=activation,
             )
-        ] + [
+        ]
+        out_mlp_E += [
             ResidualLayer(
                 emb_size_atom,
                 activation=activation,
@@ -363,7 +371,8 @@ class GemNetOC(BaseModel):
                     emb_size_edge,
                     activation=activation,
                 )
-            ] + [
+            ]
+            out_mlp_F += [
                 ResidualLayer(
                     emb_size_edge,
                     activation=activation,
@@ -1309,13 +1318,37 @@ class GemNetOC(BaseModel):
 
         nMolecules = torch.max(batch) + 1
         if self.extensive:
-            E_t = scatter_det(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
-            )  # (nMolecules, num_targets)
+            if self.le_emb == True:
+                ads_idxs = torch.where(data.tags == 2)[0]
+                le_edge_idxs = torch.where(torch.isin(main_graph["edge_index"][0], ads_idxs))[0]
+                in_le_mask = main_graph["distance"][le_edge_idxs] < self.le_cutoff
+                le_edge_idxs  = le_edge_idxs[in_le_mask]
+                le_node_idxs = main_graph["edge_index"][1, le_edge_idxs]
+                le_node_idxs = torch.unique(torch.cat((le_node_idxs, ads_idxs), dim=0))
+                le_batch = batch[le_node_idxs]
+                E_t = scatter_det(
+                    E_t[le_node_idxs], le_batch, dim=0, dim_size=nMolecules, reduce="add"
+                )  # (
+            else:
+                E_t = scatter_det(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
+                )  # (nMolecules, num_targets)
         else:
-            E_t = scatter_det(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
-            )  # (nMolecules, num_targets)
+            if self.le_emb == True:
+                ads_idxs = torch.where(data.tags == 2)[0]
+                le_edge_idxs = torch.where(torch.isin(main_graph["edge_index"][0], ads_idxs))[0]
+                in_le_mask = main_graph["distance"][le_edge_idxs] < self.le_cutoff
+                le_edge_idxs  = le_edge_idxs[in_le_mask]
+                le_node_idxs = main_graph["edge_index"][1, le_edge_idxs]
+                le_node_idxs = torch.unique(torch.cat((le_node_idxs, ads_idxs), dim=0))
+                le_batch = batch[le_node_idxs]
+                E_t = scatter_det(
+                    E_t[le_node_idxs], le_batch, dim=0, dim_size=nMolecules, reduce="mean"
+                )  # (
+            else:
+                E_t = scatter_det(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+                )  # (nMolecules, num_targets)
 
         if self.regress_forces:
             if self.direct_forces:
@@ -1356,5 +1389,5 @@ class GemNetOC(BaseModel):
             return E_t
 
     @property
-    def num_params(self) -> int:
+    def num_params(self):
         return sum(p.numel() for p in self.parameters())
