@@ -7,7 +7,9 @@ LICENSE file in the root directory of this source tree.
 
 import bisect
 import pickle
+from functools import cached_property
 from pathlib import Path
+from typing import Dict, List
 
 import lmdb
 import numpy as np
@@ -21,6 +23,8 @@ from ocpmodels.common.utils import pyg2_data_transform
 
 @registry.register_dataset("oc22_lmdb")
 class OC22LmdbDataset(Dataset):
+    metadata_path: Path
+
     r"""Dataset class to load from LMDB files containing relaxation
     trajectories or single point computations.
 
@@ -37,6 +41,19 @@ class OC22LmdbDataset(Dataset):
             transform (callable, optional): Data transform function.
                     (default: :obj:`None`)
     """
+
+    def data_sizes(self, indices: List[int]) -> np.ndarray:
+        return self.metadata["natoms"][indices]
+
+    @cached_property
+    def metadata(self) -> Dict[str, np.ndarray]:
+        metadata_path = self.metadata_path
+        if metadata_path and metadata_path.is_file():
+            return np.load(metadata_path, allow_pickle=True)
+
+        raise ValueError(
+            f"Could not find atoms metadata in '{self.metadata_path}'"
+        )
 
     def __init__(self, config, transform=None) -> None:
         super(OC22LmdbDataset, self).__init__()

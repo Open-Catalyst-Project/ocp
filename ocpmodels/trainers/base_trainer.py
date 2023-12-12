@@ -25,11 +25,8 @@ from tqdm import tqdm
 
 import ocpmodels
 from ocpmodels.common import distutils, gp_utils
-from ocpmodels.common.data_parallel import (
-    BalancedBatchSampler,
-    OCPDataParallel,
-    ParallelCollater,
-)
+from ocpmodels.common.balanced_batch_sampler import BalancedBatchSampler
+from ocpmodels.common.data_parallel import OCPDataParallel, ParallelCollater
 from ocpmodels.common.registry import registry
 from ocpmodels.common.typing import assert_is_instance
 from ocpmodels.common.utils import load_state_dict, save_checkpoint
@@ -248,14 +245,21 @@ class BaseTrainer(ABC):
             self.logger = registry.get_logger_class(logger_name)(self.config)
 
     def get_sampler(
-        self, dataset, batch_size: int, shuffle: bool
+        self,
+        dataset,
+        batch_size: int,
+        shuffle: bool,
     ) -> BalancedBatchSampler:
-        if "load_balancing" in self.config["optim"]:
-            balancing_mode = self.config["optim"]["load_balancing"]
-            force_balancing = True
+        balancing_mode = self.config["optim"].get("load_balancing", None)
+        on_error = self.config["optim"].get("load_balancing_on_error", None)
+        if balancing_mode is not None:
+            if on_error is None:
+                on_error = "raise"
         else:
             balancing_mode = "atoms"
-            force_balancing = False
+
+        if on_error is None:
+            on_error = "warn_and_no_balance"
 
         if gp_utils.initialized():
             num_replicas = gp_utils.get_dp_world_size()
@@ -263,6 +267,7 @@ class BaseTrainer(ABC):
         else:
             num_replicas = distutils.get_world_size()
             rank = distutils.get_rank()
+
         sampler = BalancedBatchSampler(
             dataset,
             batch_size=batch_size,
@@ -271,7 +276,7 @@ class BaseTrainer(ABC):
             device=self.device,
             mode=balancing_mode,
             shuffle=shuffle,
-            force_balancing=force_balancing,
+            on_error=on_error,
         )
         return sampler
 

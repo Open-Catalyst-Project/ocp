@@ -8,8 +8,9 @@ import bisect
 import logging
 import pickle
 import warnings
+from functools import cached_property
 from pathlib import Path
-from typing import List, Optional, TypeVar
+from typing import Dict, List, Optional, TypeVar
 
 import lmdb
 import numpy as np
@@ -46,6 +47,19 @@ class LmdbDataset(Dataset[T_co]):
             transform (callable, optional): Data transform function.
                     (default: :obj:`None`)
     """
+
+    def data_sizes(self, indices: List[int]) -> np.ndarray:
+        return self.metadata["natoms"][indices]
+
+    @cached_property
+    def metadata(self) -> Dict[str, np.ndarray]:
+        metadata_path = self.metadata_path
+        if metadata_path and metadata_path.is_file():
+            return np.load(metadata_path, allow_pickle=True)
+
+        raise ValueError(
+            f"Could not find atoms metadata in '{self.metadata_path}'"
+        )
 
     def __init__(self, config, transform=None) -> None:
         super(LmdbDataset, self).__init__()
