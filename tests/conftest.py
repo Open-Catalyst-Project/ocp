@@ -5,10 +5,14 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
 
-from typing import TYPE_CHECKING, Optional, Union
+import tarfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
 
 import numpy as np
 import pytest
+import requests
+import torch
 from syrupy.extensions.amber import AmberSnapshotExtension
 
 if TYPE_CHECKING:
@@ -148,3 +152,31 @@ class ApproxExtension(AmberSnapshotExtension):
 @pytest.fixture
 def snapshot(snapshot):
     return snapshot.use_extension(ApproxExtension)
+
+
+@pytest.fixture()
+def torch_deterministic() -> Iterator[bool]:
+    # Setup
+    torch.use_deterministic_algorithms(True)
+    print("TORCH IS NOW DETERMINSTIC")
+    yield True  # Usability: prints `torch_deterministic=True` if a test fails
+    # Tear down
+    torch.use_deterministic_algorithms(False)
+
+
+@pytest.fixture(scope="session")
+def tutorial_dataset_path(tmp_path_factory: Any) -> Path:
+    """
+    Download the tutorial dataset and extract it to a temporary directory.
+    This directory will persist until restart to avoid eating bandwidth.
+    """
+    TUTORIAL_DATASET_URL = "http://dl.fbaipublicfiles.com/opencatalystproject/data/tutorial_data.tar.gz"
+
+    tmpdir = tmp_path_factory.getbasetemp()
+
+    response = requests.get(TUTORIAL_DATASET_URL, stream=True)
+    assert response.status_code == 200
+
+    tarfile.open(fileobj=response.raw, mode="r|gz").extractall(path=tmpdir)
+
+    return tmpdir
