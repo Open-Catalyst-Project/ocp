@@ -168,7 +168,6 @@ class OCPTrainer(BaseTrainer):
                     "loss", loss.item(), self.metrics
                 )
 
-                loss = self.scaler.scale(loss) if self.scaler else loss
                 self._backward(loss)
 
                 # Log metrics.
@@ -339,15 +338,15 @@ class OCPTrainer(BaseTrainer):
                 target = target.view(batch_size, -1)
 
             mult = loss_info["coefficient"]
-            loss.append(
-                mult
-                * loss_info["fn"](
-                    pred,
-                    target,
-                    natoms=natoms,
-                    batch_size=batch_size,
-                )
+            loss_ = mult * loss_info["fn"](
+                pred,
+                target,
+                natoms=natoms,
+                batch_size=batch_size,
             )
+            if self.scaler:
+                loss_ = self.scaler.scale(loss_)
+            loss.append(loss_)
 
         # Sanity check to make sure the compute graph is correct.
         for lc in loss:
