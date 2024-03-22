@@ -1,0 +1,28 @@
+name: Build and install OCP package
+
+on:
+  push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+      - name: Build python package
+        run: |
+          python3.9 -m venv ocp_build
+          source ocp_build/bin/activate
+          pip install --upgrade pip
+          pip install --upgrade build
+          python -m build 
+      - name: Install python package
+        run: |
+          python3.9 -m venv ocp_deploy
+          source ocp_deploy/bin/activate
+          pip install torch==1.13.1 --index-url https://download.pytorch.org/whl/cpu 
+          pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
+          pip install dist/*.whl

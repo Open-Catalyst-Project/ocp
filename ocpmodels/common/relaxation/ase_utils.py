@@ -19,6 +19,7 @@ from ase.calculators.calculator import Calculator
 from ase.calculators.singlepoint import SinglePointCalculator as sp
 from ase.constraints import FixAtoms
 
+from ocpmodels.common.model_registry import model_name_to_local_file
 from ocpmodels.common.registry import registry
 from ocpmodels.common.utils import (
     load_config,
@@ -69,6 +70,8 @@ class OCPCalculator(Calculator):
         self,
         config_yml: Optional[str] = None,
         checkpoint_path: Optional[str] = None,
+        model_name: Optional[str] = None,
+        local_cache: Optional[str] = None,
         trainer: Optional[str] = None,
         cutoff: int = 6,
         max_neighbors: int = 50,
@@ -95,6 +98,14 @@ class OCPCalculator(Calculator):
         setup_imports()
         setup_logging()
         Calculator.__init__(self)
+
+        if model_name is not None:
+            if local_cache is None:
+                logging.error("Local cahce must be set when using model name")
+                return None
+            checkpoint_path = model_name_to_local_file(
+                model_name=model_name, local_cache=local_cache
+            )
 
         # Either the config path or the checkpoint path needs to be provided
         assert config_yml or checkpoint_path is not None
