@@ -1,0 +1,131 @@
+trainer: equiformerv2_forces
+
+dataset:
+  train:
+    format: lmdb
+    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/train/2M
+    key_mapping:
+      y: energy
+      force: forces
+    transforms:
+      normalizer:
+        energy:
+          mean: -0.7554450631141663
+          stdev: 2.887317180633545
+        forces:
+          mean: 0
+          stdev: 2.887317180633545
+  val:
+    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/val/id_30k
+  # test:
+  #   src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/val/id_30k
+
+logger: 
+  name: wandb
+  project: is2dt_v4
+
+loss_functions:
+  - energy:
+      fn: mae
+      coefficient: 1
+  - forces:
+      fn: l2mae
+      coefficient: 100
+
+evaluation_metrics:
+  metrics:
+    energy:
+      - mae
+      - mse
+      - energy_within_threshold
+    forces:
+      - mae
+      - cosine_similarity
+    misc:
+      - energy_forces_within_threshold
+  primary_metric: forces_mae
+
+outputs:
+  energy:
+    shape: 1
+    level: system
+  forces:
+    shape: 3
+    level: atom
+    train_on_free_atoms: True
+    eval_on_free_atoms: True
+
+slurm:
+  constraint: "volta32gb"
+
+model:
+  name: equiformer_v2
+
+  use_pbc:                  True
+  regress_forces:           True
+  otf_graph:                True
+  max_neighbors:            20
+  max_radius:               12.0
+  max_num_elements:         90
+
+  num_layers:               12
+  sphere_channels:          128
+  attn_hidden_channels:     64              # [64, 96] This determines the hidden size of message passing. Do not necessarily use 96.
+  num_heads:                8
+  attn_alpha_channels:      64              # Not used when `use_s2_act_attn` is True.
+  attn_value_channels:      16
+  ffn_hidden_channels:      128
+  norm_type:                'layer_norm_sh'    # ['rms_norm_sh', 'layer_norm', 'layer_norm_sh']
+
+  lmax_list:                [6]
+  mmax_list:                [2]
+  grid_resolution:          18              # [18, 16, 14, None] For `None`, simply comment this line.
+
+  num_sphere_samples:       128
+
+  edge_channels:              128
+  use_atom_edge_embedding:    True
+  share_atom_edge_embedding:  False         # If `True`, `use_atom_edge_embedding` must be `True` and the atom edge embedding will be shared across all blocks.
+  distance_function:          'gaussian'
+  num_distance_basis:         512           # not used
+
+  attn_activation:          'silu'
+  use_s2_act_attn:          False       # [False, True] Switch between attention after S2 activation or the original EquiformerV1 attention.
+  use_attn_renorm:          True        # Attention re-normalization. Used for ablation study.
+  ffn_activation:           'silu'      # ['silu', 'swiglu']
+  use_gate_act:             False       # [True, False] Switch between gate activation and S2 activation
+  use_grid_mlp:             True        # [False, True] If `True`, use projecting to grids and performing MLPs for FFNs.
+  use_sep_s2_act:           True        # Separable S2 activation. Used for ablation study.
+
+  alpha_drop:               0.1         # [0.0, 0.1]
+  drop_path_rate:           0.05        # [0.0, 0.05]
+  proj_drop:                0.0
+
+  weight_init:              'uniform'    # ['uniform', 'normal']
+
+optim:
+  batch_size:                   4         # 6
+  eval_batch_size:              4         # 6
+  load_balancing: atoms
+  num_workers: 8
+  lr_initial:                   0.0004    # [0.0002, 0.0004], eSCN uses 0.0008 for batch size 96
+
+  optimizer: AdamW
+  optimizer_params:
+    weight_decay: 0.001
+  scheduler: LambdaLR
+  scheduler_params:
+    lambda_type: cosine
+    warmup_factor: 0.2
+    warmup_epochs: 0.1
+    lr_min_factor: 0.01         #
+
+  max_epochs: 30
+  force_coefficient: 100
+  energy_coefficient: 2
+  clip_grad_norm: 100
+  ema_decay: 0.999
+  loss_energy: mae
+  loss_force: l2mae
+
+  eval_every: 5000

@@ -1,7 +1,6 @@
 # name: TestDimeNet.test_energy_force_shape
   Size(
     1,
-    1,
   )
 # ---
 # name: TestDimeNet.test_energy_force_shape.1

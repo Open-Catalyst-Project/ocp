@@ -1,9 +1,10 @@
 import logging
 import math
-from typing import List, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
+from e3nn import o3
 
 from ocpmodels.common.registry import registry
 from ocpmodels.common.utils import conditional_grad
@@ -109,51 +110,54 @@ class EquiformerV2_OC20(BaseModel):
 
     def __init__(
         self,
-        num_atoms: int,  # not used
-        bond_feat_dim: int,  # not used
-        num_targets: int,  # not used
-        use_pbc: bool = True,
-        regress_forces: bool = True,
-        otf_graph: bool = True,
-        max_neighbors: int = 500,
-        max_radius: float = 5.0,
-        max_num_elements: int = 90,
-        num_layers: int = 12,
-        sphere_channels: int = 128,
-        attn_hidden_channels: int = 128,
-        num_heads: int = 8,
-        attn_alpha_channels: int = 32,
-        attn_value_channels: int = 16,
-        ffn_hidden_channels: int = 512,
-        norm_type: str = "rms_norm_sh",
-        lmax_list: List[int] = [6],
-        mmax_list: List[int] = [2],
-        grid_resolution: Optional[int] = None,
-        num_sphere_samples: int = 128,
-        edge_channels: int = 128,
-        use_atom_edge_embedding: bool = True,
-        share_atom_edge_embedding: bool = False,
-        use_m_share_rad: bool = False,
-        distance_function: str = "gaussian",
-        num_distance_basis: int = 512,
-        attn_activation: str = "scaled_silu",
-        use_s2_act_attn: bool = False,
-        use_attn_renorm: bool = True,
-        ffn_activation: str = "scaled_silu",
-        use_gate_act: bool = False,
-        use_grid_mlp: bool = False,
-        use_sep_s2_act: bool = True,
-        alpha_drop: float = 0.1,
-        drop_path_rate: float = 0.05,
-        proj_drop: float = 0.0,
-        weight_init: str = "normal",
+        output_targets: dict,
+        use_pbc=True,
+        regress_energy=True,
+        regress_forces=True,
+        otf_graph=True,
+        max_neighbors=500,
+        max_radius=5.0,
+        max_num_elements=90,
+        num_layers=12,
+        sphere_channels=128,
+        attn_hidden_channels=128,
+        num_heads=8,
+        attn_alpha_channels=32,
+        attn_value_channels=16,
+        ffn_hidden_channels=512,
+        norm_type="rms_norm_sh",
+        lmax_list=[6],
+        mmax_list=[2],
+        grid_resolution=None,
+        num_sphere_samples=128,
+        edge_channels=128,
+        use_atom_edge_embedding=True,
+        share_atom_edge_embedding=False,
+        use_m_share_rad=False,
+        distance_function="gaussian",
+        num_distance_basis=512,
+        attn_activation="scaled_silu",
+        use_s2_act_attn=False,
+        use_attn_renorm=True,
+        ffn_activation="scaled_silu",
+        use_gate_act=False,
+        use_grid_mlp=False,
+        use_sep_s2_act=True,
+        alpha_drop=0.1,
+        drop_path_rate=0.05,
+        proj_drop=0.0,
+        weight_init="normal",
         enforce_max_neighbors_strictly: bool = True,
         avg_num_nodes: Optional[float] = None,
         avg_degree: Optional[float] = None,
         use_energy_lin_ref: Optional[bool] = False,
         load_energy_lin_ref: Optional[bool] = False,
     ):
-        super().__init__()
+        super().__init__(
+            output_targets=output_targets,
+            node_embedding_dim=sphere_channels,
+            edge_embedding_dim=edge_channels,
+        )
 
         import sys
 
@@ -164,6 +168,7 @@ class EquiformerV2_OC20(BaseModel):
             raise ImportError
 
         self.use_pbc = use_pbc
+        self.regress_energy = regress_energy
         self.regress_forces = regress_forces
         self.otf_graph = otf_graph
         self.max_neighbors = max_neighbors
@@ -351,18 +356,19 @@ class EquiformerV2_OC20(BaseModel):
             lmax=max(self.lmax_list),
             num_channels=self.sphere_channels,
         )
-        self.energy_block = FeedForwardNetwork(
-            self.sphere_channels,
-            self.ffn_hidden_channels,
-            1,
-            self.lmax_list,
-            self.mmax_list,
-            self.SO3_grid,
-            self.ffn_activation,
-            self.use_gate_act,
-            self.use_grid_mlp,
-            self.use_sep_s2_act,
-        )
+        if self.regress_energy:
+            self.energy_block = FeedForwardNetwork(
+                self.sphere_channels,
+                self.ffn_hidden_channels,
+                1,
+                self.lmax_list,
+                self.mmax_list,
+                self.SO3_grid,
+                self.ffn_activation,
+                self.use_gate_act,
+                self.use_grid_mlp,
+                self.use_sep_s2_act,
+            )
         if self.regress_forces:
             self.force_block = SO2EquivariantGraphAttention(
                 self.sphere_channels,
@@ -398,7 +404,7 @@ class EquiformerV2_OC20(BaseModel):
         self.apply(self._uniform_init_rad_func_linear_weights)
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data):
+    def _forward(self, data):
         self.batch_size = len(data.natoms)
         self.dtype = data.pos.dtype
         self.device = data.pos.device
@@ -498,42 +504,62 @@ class EquiformerV2_OC20(BaseModel):
         x.embedding = self.norm(x.embedding)
 
         ###############################################################
+        # Get edge embeddings
+        ###############################################################
+        sphharm_weights_edge = o3.spherical_harmonics(
+            torch.arange(0, x.lmax_list[-1] + 1).tolist(),
+            edge_distance_vec,
+            False,
+        ).detach()
+
+        x_edge = x.expand_edge(edge_index[1]).embedding
+        x_edge = torch.einsum("abc, ab->ac", x_edge, sphharm_weights_edge)
+
+        outputs = {
+            "edge_idx": edge_index[1],  # only need target node
+            "edge_vec": edge_distance_vec,
+            "edge_embedding": x_edge,
+            "node_embedding": x.embedding,
+        }
+
+        ###############################################################
         # Energy estimation
         ###############################################################
-        node_energy = self.energy_block(x)
-        node_energy = node_energy.embedding.narrow(1, 0, 1)
-        energy = torch.zeros(
-            len(data.natoms),
-            device=node_energy.device,
-            dtype=node_energy.dtype,
-        )
-        energy.index_add_(0, data.batch, node_energy.view(-1))
-        energy = energy / self.avg_num_nodes
+        if self.regress_energy:
+            node_energy = self.energy_block(x)
+            node_energy = node_energy.embedding.narrow(1, 0, 1)
+            energy = torch.zeros(
+                len(data.natoms),
+                device=node_energy.device,
+                dtype=node_energy.dtype,
+            )
+            energy.index_add_(0, data.batch, node_energy.view(-1))
+            energy = energy / self.avg_num_nodes
 
-        # Add the per-atom linear references to the energy.
-        if self.use_energy_lin_ref and self.load_energy_lin_ref:
-            # During training, target E = (E_DFT - E_ref - E_mean) / E_std, and
-            # during inference, \hat{E_DFT} = \hat{E} * E_std + E_ref + E_mean
-            # where
-            #
-            # E_DFT = raw DFT energy,
-            # E_ref = reference energy,
-            # E_mean = normalizer mean,
-            # E_std = normalizer std,
-            # \hat{E} = predicted energy,
-            # \hat{E_DFT} = predicted DFT energy.
-            #
-            # We can also write this as
-            # \hat{E_DFT} = E_std * (\hat{E} + E_ref / E_std) + E_mean,
-            # which is why we save E_ref / E_std as the linear reference.
-            with torch.cuda.amp.autocast(False):
-                energy = energy.to(self.energy_lin_ref.dtype).index_add(
-                    0,
-                    data.batch,
-                    self.energy_lin_ref[atomic_numbers],
-                )
+            # Add the per-atom linear references to the energy.
+            if self.use_energy_lin_ref and self.load_energy_lin_ref:
+                # During training, target E = (E_DFT - E_ref - E_mean) / E_std, and
+                # during inference, \hat{E_DFT} = \hat{E} * E_std + E_ref + E_mean
+                # where
+                #
+                # E_DFT = raw DFT energy,
+                # E_ref = reference energy,
+                # E_mean = normalizer mean,
+                # E_std = normalizer std,
+                # \hat{E} = predicted energy,
+                # \hat{E_DFT} = predicted DFT energy.
+                #
+                # We can also write this as
+                # \hat{E_DFT} = E_std * (\hat{E} + E_ref / E_std) + E_mean,
+                # which is why we save E_ref / E_std as the linear reference.
+                with torch.cuda.amp.autocast(False):
+                    energy = energy.to(self.energy_lin_ref.dtype).index_add(
+                        0,
+                        data.batch,
+                        self.energy_lin_ref[atomic_numbers],
+                    )
 
-        outputs = {"energy": energy}
+            outputs["energy"] = energy
         ###############################################################
         # Force estimation
         ###############################################################

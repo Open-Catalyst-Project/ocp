@@ -22,7 +22,7 @@ from ocpmodels.datasets import data_list_collater
 
 
 class OCPCollater:
-    def __init__(self, otf_graph: bool = False) -> None:
+    def __init__(self, otf_graph: bool = True) -> None:
         self.otf_graph = otf_graph
 
     def __call__(self, data_list: List[Data]) -> Batch:

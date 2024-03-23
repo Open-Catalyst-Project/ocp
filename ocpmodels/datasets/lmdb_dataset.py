@@ -246,7 +246,7 @@ class TrajectoryLmdbDataset(LmdbDataset[BaseData]):
 
 
 def data_list_collater(
-    data_list: List[BaseData], otf_graph: bool = False
+    data_list: List[BaseData], otf_graph: bool = True
 ) -> BaseData:
     batch = Batch.from_data_list(data_list)
 

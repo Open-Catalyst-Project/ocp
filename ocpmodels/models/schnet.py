@@ -15,7 +15,7 @@ from ocpmodels.models.base import BaseModel
 
 
 @registry.register_model("schnet")
-class SchNetWrap(SchNet, BaseModel):
+class SchNetWrap(BaseModel, SchNet):
     r"""Wrapper around the continuous-filter convolutional neural network SchNet from the
     `"SchNet: A Continuous-filter Convolutional Neural Network for Modeling
     Quantum Interactions" <https://arxiv.org/abs/1706.08566>`_. Each layer uses interaction
@@ -26,9 +26,6 @@ class SchNetWrap(SchNet, BaseModel):
         h_{\mathbf{\Theta}} ( \exp(-\gamma(\mathbf{e}_{j,i} - \mathbf{\mu}))),
 
     Args:
-        num_atoms (int): Unused argument
-        bond_feat_dim (int): Unused argument
-        num_targets (int): Number of targets to predict.
         use_pbc (bool, optional): If set to :obj:`True`, account for periodic boundary conditions.
             (default: :obj:`True`)
         regress_forces (bool, optional): If set to :obj:`True`, predict forces by differentiating
@@ -52,27 +49,26 @@ class SchNetWrap(SchNet, BaseModel):
 
     def __init__(
         self,
-        num_atoms: int,  # not used
-        bond_feat_dim: int,  # not used
-        num_targets: int,
-        use_pbc: bool = True,
-        regress_forces: bool = True,
-        otf_graph: bool = False,
-        hidden_channels: int = 128,
-        num_filters: int = 128,
-        num_interactions: int = 6,
-        num_gaussians: int = 50,
-        cutoff: float = 10.0,
-        readout: str = "add",
+        output_targets: dict,
+        use_pbc=True,
+        regress_forces=True,
+        otf_graph=False,
+        hidden_channels=128,
+        num_filters=128,
+        num_interactions=6,
+        num_gaussians=50,
+        cutoff=10.0,
+        readout="add",
     ) -> None:
-        self.num_targets = num_targets
+        self.output_targets = output_targets
         self.regress_forces = regress_forces
         self.use_pbc = use_pbc
         self.cutoff = cutoff
         self.otf_graph = otf_graph
         self.max_neighbors = 50
         self.reduce = readout
-        super(SchNetWrap, self).__init__(
+        SchNet.__init__(
+            self,
             hidden_channels=hidden_channels,
             num_filters=num_filters,
             num_interactions=num_interactions,
@@ -80,11 +76,17 @@ class SchNetWrap(SchNet, BaseModel):
             cutoff=cutoff,
             readout=readout,
         )
+        BaseModel.__init__(
+            self,
+            output_targets=output_targets,
+            node_embedding_dim=hidden_channels,
+            edge_embedding_dim=hidden_channels,
+            _torch_initialized=True,
+        )
 
     @conditional_grad(torch.enable_grad())
-    def _forward(self, data):
+    def _forward_helper(self, data):
         z = data.atomic_numbers.long()
-        pos = data.pos
         batch = data.batch
 
         (
@@ -96,30 +98,29 @@ class SchNetWrap(SchNet, BaseModel):
             neighbors,
         ) = self.generate_graph(data)
 
-        if self.use_pbc:
-            assert z.dim() == 1 and z.dtype == torch.long
+        assert z.dim() == 1 and z.dtype == torch.long
 
-            edge_attr = self.distance_expansion(edge_weight)
+        edge_attr = self.distance_expansion(edge_weight)
 
-            h = self.embedding(z)
-            for interaction in self.interactions:
-                h = h + interaction(h, edge_index, edge_weight, edge_attr)
+        h = self.embedding(z)
+        for interaction in self.interactions:
+            h = h + interaction(h, edge_index, edge_weight, edge_attr)
 
-            h = self.lin1(h)
-            h = self.act(h)
-            h = self.lin2(h)
+        edge_embedding = self.lin1(h)
+        h = self.act(edge_embedding)
+        h = self.lin2(h)
 
-            batch = torch.zeros_like(z) if batch is None else batch
-            energy = scatter(h, batch, dim=0, reduce=self.reduce)
-        else:
-            energy = super(SchNetWrap, self).forward(z, pos, batch)
-        return energy
+        batch = torch.zeros_like(z) if batch is None else batch
+        energy = scatter(h, batch, dim=0, reduce=self.reduce)
 
-    def forward(self, data):
+        return energy, edge_embedding
+
+    def _forward(self, data):
         if self.regress_forces:
             data.pos.requires_grad_(True)
-        energy = self._forward(data)
-        outputs = {"energy": energy}
+        energy, edge_embedding = self._forward_helper(data)
+
+        outputs = {"energy": energy, "edge_embedding": edge_embedding}
 
         if self.regress_forces:
             forces = -1 * (

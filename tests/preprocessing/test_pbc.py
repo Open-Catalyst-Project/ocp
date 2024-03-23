@@ -38,7 +38,7 @@ def load_data(request) -> None:
 class TestPBC:
     def test_pbc_distances(self) -> None:
         data = self.data
-        batch = data_list_collater([data] * 5)
+        batch = data_list_collater([data] * 5, False)
         out = get_pbc_distances(
             batch.pos,
             batch.edge_index,

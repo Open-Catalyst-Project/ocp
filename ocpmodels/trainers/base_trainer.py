@@ -266,7 +266,7 @@ class BaseTrainer(ABC):
 
     def load_datasets(self) -> None:
         self.ocp_collater = OCPCollater(
-            self.config["model_attributes"].get("otf_graph", False)
+            self.config["model_attributes"].get("otf_graph", True)
         )
         self.train_loader = None
         self.val_loader = None
@@ -367,6 +367,7 @@ class BaseTrainer(ABC):
 
         self.output_targets = {}
         for target_name in self.config["outputs"]:
+            ## TODO: Assert that all targets, loss fn, metrics defined and consistent
             self.output_targets[target_name] = self.config["outputs"][
                 target_name
             ]
@@ -416,21 +417,8 @@ class BaseTrainer(ABC):
         if distutils.is_master():
             logging.info(f"Loading model: {self.config['model']}")
 
-        # TODO: depreicated, remove.
-        bond_feat_dim = None
-        bond_feat_dim = self.config["model_attributes"].get(
-            "num_gaussians", 50
-        )
-
-        loader = self.train_loader or self.val_loader or self.test_loader
         self.model = registry.get_model_class(self.config["model"])(
-            loader.dataset[0].x.shape[-1]
-            if loader
-            and hasattr(loader.dataset[0], "x")
-            and loader.dataset[0].x is not None
-            else None,
-            bond_feat_dim,
-            1,
+            self.output_targets,
             **self.config["model_attributes"],
         ).to(self.device)
 

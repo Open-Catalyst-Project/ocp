@@ -1,7 +1,6 @@
 # name: TestGemNetT.test_energy_force_shape
   Size(
     1,
-    1,
   )
 # ---
 # name: TestGemNetT.test_energy_force_shape.1

@@ -57,9 +57,7 @@ def load_model(request):
     )
 
     model = registry.get_model_class("equiformer_v2")(
-        None,
-        -1,
-        1,
+        {"energy": {}, "forces": {}},
         use_pbc=True,
         regress_forces=True,
         otf_graph=True,
