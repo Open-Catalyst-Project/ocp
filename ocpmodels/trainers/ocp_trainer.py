@@ -140,8 +140,10 @@ class OCPTrainer(BaseTrainer):
         for epoch_int in range(
             start_epoch, self.config["optim"]["max_epochs"]
         ):
-            self.train_sampler.set_epoch(epoch_int)
             skip_steps = self.step % len(self.train_loader)
+            self.train_sampler.set_epoch_and_start_iteration(
+                epoch_int, skip_steps
+            )
             train_loader_iter = iter(self.train_loader)
 
             for i in range(skip_steps, len(self.train_loader)):

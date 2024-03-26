@@ -57,6 +57,64 @@ class _HasMetadata(Protocol):
         ...
 
 
+# mostly from https://github.com/facebookresearch/vissl/blob/09270ed25a6c2cf71263d955b64cbe076d34ac45/vissl/data/data_helper.py#L93
+class StatefulDistributedSampler(DistributedSampler):
+    """
+    More fine-grained state DataSampler that uses training iteration and epoch
+    both for shuffling data. PyTorch DistributedSampler only uses epoch
+    for the shuffling and starts sampling data from the start. In case of training
+    on very large data, we train for one epoch only and when we resume training,
+    we want to resume the data sampler from the training iteration.
+    """
+
+    def __init__(self, dataset, batch_size, **kwargs):
+        """
+        Initializes the instance of StatefulDistributedSampler. Random seed is set
+        for the epoch set and data is shuffled. For starting the sampling, use
+        the start_iter (set to 0 or set by checkpointing resuming) to
+        sample data from the remaining images.
+
+        Args:
+            dataset (Dataset): Pytorch dataset that sampler will shuffle
+            batch_size (int): batch size we want the sampler to sample
+            seed (int): Seed for the torch generator.
+        """
+        super().__init__(dataset=dataset, **kwargs)
+
+        self.start_iter = 0
+        self.batch_size = batch_size
+        assert self.batch_size > 0, "batch_size not set for the sampler"
+        logging.info(f"rank: {self.rank}: Sampler created...")
+
+    def __iter__(self):
+        # partition data into num_replicas and optionally shuffle within a rank
+        # also consider if we are dropping samples to make evenly divisble by
+        # num_replicas or not
+        common_chunk_size = len(self.dataset) // self.num_replicas
+        num_samples = common_chunk_size + (
+            self.rank < len(self.dataset) % self.num_replicas
+        ) * (not self.drop_last)
+        start_idx = common_chunk_size * self.rank + min(
+            len(self.dataset) % self.num_replicas, self.rank
+        ) * (not self.drop_last)
+
+        g = torch.Generator()
+        g.manual_seed(self.epoch + self.seed)
+        shuffling = torch.randperm(num_samples, generator=g).tolist()
+        indices = np.arange(start_idx, start_idx + num_samples)[
+            shuffling
+        ].tolist()
+        # make sure we have correct number of samples per replica
+        assert len(indices) == num_samples
+
+        # resume the sampler
+        return iter(indices[self.start_iter * self.batch_size :])
+
+    def set_epoch_and_start_iteration(self, epoch, start_iter):
+        self.set_epoch(epoch)
+        self.start_iter = start_iter
+
+
 class BalancedBatchSampler(Sampler):
     def _load_dataset(self, dataset, mode: Literal["atoms", "neighbors"]):
         errors: List[str] = []
@@ -108,12 +166,13 @@ class BalancedBatchSampler(Sampler):
         self.shuffle = shuffle
         self.drop_last = drop_last
 
-        self.single_sampler = DistributedSampler(
+        self.single_sampler = StatefulDistributedSampler(
             self.dataset,
             num_replicas=num_replicas,
             rank=rank,
             shuffle=shuffle,
             drop_last=drop_last,
+            batch_size=batch_size,
         )
         self.batch_sampler = BatchSampler(
             self.single_sampler,
@@ -161,8 +220,12 @@ class BalancedBatchSampler(Sampler):
     def __len__(self) -> int:
         return len(self.batch_sampler)
 
-    def set_epoch(self, epoch: int) -> None:
-        self.single_sampler.set_epoch(epoch)
+    def set_epoch_and_start_iteration(
+        self, epoch: int, start_iteration: int
+    ) -> None:
+        self.single_sampler.set_epoch_and_start_iteration(
+            epoch, start_iteration
+        )
 
     def __iter__(self):
         if not self.balance_batches:
