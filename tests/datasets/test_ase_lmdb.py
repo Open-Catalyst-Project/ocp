@@ -1,23 +1,14 @@
-from pathlib import Path
-
 import numpy as np
-import tqdm
+import pytest
 from ase import build
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.constraints import FixAtoms
+from ase.db.row import AtomsRow
 
 from ocpmodels.datasets.lmdb_database import LMDBDatabase
 
-DB_NAME = "ase_lmdb.lmdb"
 N_WRITES = 100
 N_READS = 200
-
-
-def cleanup_asedb() -> None:
-    if Path(DB_NAME).is_file():
-        Path(DB_NAME).unlink()
-    if Path(f"{DB_NAME}-lock").is_file():
-        Path(f"{DB_NAME}-lock").unlink()
 
 
 test_structures = [
@@ -61,110 +52,77 @@ def generate_random_structure():
     return slab
 
 
-def write_random_atoms() -> None:
-    slab = build.fcc111("Cu", size=(4, 4, 3), vacuum=10.0)
-    with LMDBDatabase(DB_NAME) as db:
+@pytest.fixture(scope="function")
+def ase_lmbd_path(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("dataset")
+    with LMDBDatabase(tmp_path / "ase_lmdb.lmdb") as db:
         for structure in test_structures:
             db.write(structure)
 
-        for i in tqdm.tqdm(range(N_WRITES)):
+        for _ in range(N_WRITES):
             slab = generate_random_structure()
-
             # Save the slab info, and make sure the info gets put in as data
             db.write(slab, data=slab.info)
+    return tmp_path / "ase_lmdb.lmdb"
 
 
-def test_aselmdb_write() -> None:
-    # Representative structure
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME, readonly=True) as db:
+def test_aselmdb_write(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path, readonly=True) as db:
         for i, structure in enumerate(test_structures):
             assert str(structure) == str(db._get_row_by_index(i).toatoms())
 
-    cleanup_asedb()
 
-
-def test_aselmdb_count() -> None:
-    # Representative structure
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME, readonly=True) as db:
+def test_aselmdb_count(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path, readonly=True) as db:
         assert db.count() == N_WRITES + len(test_structures)
 
-    cleanup_asedb()
 
-
-def test_aselmdb_delete() -> None:
-    cleanup_asedb()
-
-    # Representative structure
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME) as db:
+def test_aselmdb_delete(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path) as db:
         for i in range(5):
             # Note the available ids list is updating
             # but the ids themselves are fixed.
             db.delete([db.ids[0]])
-
     assert db.count() == N_WRITES + len(test_structures) - 5
 
-    cleanup_asedb()
 
-
-def test_aselmdb_randomreads() -> None:
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME, readonly=True) as db:
-        for i in tqdm.tqdm(range(N_READS)):
+def test_aselmdb_randomreads(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path, readonly=True) as db:
+        for _ in range(N_READS):
             total_size = db.count()
-            row = db._get_row_by_index(np.random.choice(total_size)).toatoms()
-            del row
-    cleanup_asedb()
+            assert isinstance(
+                db._get_row_by_index(np.random.choice(total_size)), AtomsRow
+            )
 
 
-def test_aselmdb_constraintread() -> None:
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME, readonly=True) as db:
+def test_aselmdb_constraintread(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path, readonly=True) as db:
         atoms = db._get_row_by_index(2).toatoms()
 
-    assert type(atoms.constraints[0]) == FixAtoms
-
-    cleanup_asedb()
+    assert isinstance(atoms.constraints[0], FixAtoms)
 
 
-def update_keyvalue_pair() -> None:
-    write_random_atoms()
-    with LMDBDatabase(DB_NAME) as db:
+def test_update_keyvalue_pair(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path) as db:
         db.update(1, test=5)
 
-    with LMDBDatabase(DB_NAME) as db:
-        row = db.get_row_by_id(1)
+    with LMDBDatabase(ase_lmbd_path) as db:
+        row = db._get_row(1)
         assert row.test == 5
 
-    cleanup_asedb()
 
-
-def update_atoms() -> None:
-    write_random_atoms()
-    with LMDBDatabase(DB_NAME) as db:
+def test_update_atoms(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path) as db:
         db.update(40, atoms=test_structures[-1])
 
-    with LMDBDatabase(DB_NAME) as db:
-        row = db.get_row_by_id(40)
+    with LMDBDatabase(ase_lmbd_path) as db:
+        row = db._get_row(40)
         assert str(row.toatoms()) == str(test_structures[-1])
 
-    cleanup_asedb()
 
-
-def test_metadata() -> None:
-    write_random_atoms()
-
-    with LMDBDatabase(DB_NAME) as db:
+def test_metadata(ase_lmbd_path) -> None:
+    with LMDBDatabase(ase_lmbd_path) as db:
         db.metadata = {"test": True}
 
-    with LMDBDatabase(DB_NAME, readonly=True) as db:
+    with LMDBDatabase(ase_lmbd_path, readonly=True) as db:
         assert db.metadata["test"] is True
-
-    cleanup_asedb()

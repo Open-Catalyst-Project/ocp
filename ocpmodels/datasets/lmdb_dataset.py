@@ -21,6 +21,7 @@ from torch_geometric.data.data import BaseData
 from ocpmodels.common.registry import registry
 from ocpmodels.common.typing import assert_is_instance
 from ocpmodels.common.utils import pyg2_data_transform
+from ocpmodels.datasets._utils import rename_data_object_keys
 from ocpmodels.datasets.target_metadata_guesser import guess_property_metadata
 from ocpmodels.modules.transforms import DataTransforms
 
@@ -44,11 +45,9 @@ class LmdbDataset(Dataset[T_co]):
     folder, but lmdb lengths are now calculated directly from the number of keys.
     Args:
             config (dict): Dataset configuration
-            transform (callable, optional): Data transform function.
-                    (default: :obj:`None`)
     """
 
-    def __init__(self, config, transform=None) -> None:
+    def __init__(self, config) -> None:
         super(LmdbDataset, self).__init__()
         self.config = config
 
@@ -151,13 +150,9 @@ class LmdbDataset(Dataset[T_co]):
             data_object = pyg2_data_transform(pickle.loads(datapoint_pickled))
 
         if self.key_mapping is not None:
-            for _property in self.key_mapping:
-                # catch for test data not containing labels
-                if _property in data_object:
-                    new_property = self.key_mapping[_property]
-                    if new_property not in data_object:
-                        data_object[new_property] = data_object[_property]
-                        del data_object[_property]
+            data_object = rename_data_object_keys(
+                data_object, self.key_mapping
+            )
 
         data_object = self.transforms(data_object)
 

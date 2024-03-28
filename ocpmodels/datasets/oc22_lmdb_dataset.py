@@ -17,6 +17,7 @@ from torch.utils.data import Dataset
 from ocpmodels.common.registry import registry
 from ocpmodels.common.typing import assert_is_instance as aii
 from ocpmodels.common.utils import pyg2_data_transform
+from ocpmodels.datasets._utils import rename_data_object_keys
 from ocpmodels.modules.transforms import DataTransforms
 
 
@@ -198,12 +199,9 @@ class OC22LmdbDataset(Dataset):
             data_object[attr] -= lin_energy
 
         if self.key_mapping is not None:
-            for _property in self.key_mapping:
-                if _property in data_object:
-                    new_property = self.key_mapping[_property]
-                    if new_property not in data_object:
-                        data_object[new_property] = data_object[_property]
-                        del data_object[_property]
+            data_object = rename_data_object_keys(
+                data_object, self.key_mapping
+            )
 
         # to jointly train on oc22+oc20, need to delete these oc20-only attributes
         # ensure otf_graph=1 in your model configuration

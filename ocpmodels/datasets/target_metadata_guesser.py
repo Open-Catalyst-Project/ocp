@@ -1,6 +1,7 @@
 import logging
 
 import numpy as np
+from ase.stress import voigt_6_to_full_3x3_stress
 
 
 def uniform_atoms_lengths(atoms_lens) -> bool:
@@ -183,6 +184,16 @@ def guess_property_metadata(atoms_list):
             target_samples = [
                 np.array(atoms.calc.results[key]) for atoms in atoms_list
             ]
+
+            # stress needs to be handled separately in case it was saved in voigt (6, ) notation
+            # atoms2graphs will always request voigt=False so turn it into full 3x3
+            if key == "stress":
+                target_samples = [
+                    voigt_6_to_full_3x3_stress(sample)
+                    if sample.shape != (3, 3)
+                    else sample
+                    for sample in target_samples
+                ]
 
             # Guess the metadata
             targets[f"{key}"] = guess_target_metadata(

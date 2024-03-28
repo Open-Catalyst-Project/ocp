@@ -5,7 +5,9 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import Optional, Sequence
 
 import ase.db.sqlite
 import ase.io.trajectory
@@ -17,8 +19,8 @@ from ocpmodels.common.utils import collate
 
 try:
     from pymatgen.io.ase import AseAtomsAdaptor
-except Exception:
-    pass
+except ImportError:
+    AseAtomsAdaptor = None
 
 
 try:
@@ -45,6 +47,7 @@ class AtomsToGraphs:
         radius (int or float): Cutoff radius in Angstroms to search for neighbors.
         r_energy (bool): Return the energy with other properties. Default is False, so the energy will not be returned.
         r_forces (bool): Return the forces with other properties. Default is False, so the forces will not be returned.
+        r_stress (bool): Return the stress with other properties. Default is False, so the stress will not be returned.
         r_distances (bool): Return the distances with other properties.
         Default is False, so the distances will not be returned.
         r_edges (bool): Return interatomic edges with other properties. Default is True, so edges will be returned.
@@ -52,12 +55,15 @@ class AtomsToGraphs:
         Default is True, so the fixed indices will be returned.
         r_pbc (bool): Return the periodic boundary conditions with other properties.
         Default is False, so the periodic boundary conditions will not be returned.
+        r_data_keys (sequence of str, optional): Return values corresponding to given keys in atoms.info data with other
+        properties. Default is None, so no data will be returned as properties.
 
     Attributes:
         max_neigh (int): Maximum number of neighbors to consider.
         radius (int or float): Cutoff radius in Angstoms to search for neighbors.
         r_energy (bool): Return the energy with other properties. Default is False, so the energy will not be returned.
         r_forces (bool): Return the forces with other properties. Default is False, so the forces will not be returned.
+        r_stress (bool): Return the stress with other properties. Default is False, so the stress will not be returned.
         r_distances (bool): Return the distances with other properties.
         Default is False, so the distances will not be returned.
         r_edges (bool): Return interatomic edges with other properties. Default is True, so edges will be returned.
@@ -65,7 +71,8 @@ class AtomsToGraphs:
         Default is True, so the fixed indices will be returned.
         r_pbc (bool): Return the periodic boundary conditions with other properties.
         Default is False, so the periodic boundary conditions will not be returned.
-
+        r_data_keys (sequence of str, optional): Return values corresponding to given keys in atoms.info data with other
+        properties. Default is None, so no data will be returned as properties.
     """
 
     def __init__(
@@ -78,19 +85,28 @@ class AtomsToGraphs:
         r_edges: bool = True,
         r_fixed: bool = True,
         r_pbc: bool = False,
+        r_stress: bool = False,
+        r_data_keys: Optional[Sequence[str]] = None,
     ) -> None:
         self.max_neigh = max_neigh
         self.radius = radius
         self.r_energy = r_energy
         self.r_forces = r_forces
+        self.r_stress = r_stress
         self.r_distances = r_distances
         self.r_fixed = r_fixed
         self.r_edges = r_edges
         self.r_pbc = r_pbc
+        self.r_data_keys = r_data_keys
 
     def _get_neighbors_pymatgen(self, atoms: ase.Atoms):
         """Preforms nearest neighbor search and returns edge index, distances,
         and cell offsets"""
+        if AseAtomsAdaptor is None:
+            raise RuntimeError(
+                "Unable to import pymatgen.io.ase.AseAtomsAdaptor. Make sure pymatgen is properly installed."
+            )
+
         struct = AseAtomsAdaptor.get_structure(atoms)
         _c_index, _n_index, _offsets, n_distance = struct.get_neighbor_list(
             r=self.radius, numerical_tol=0, exclude_self=True
@@ -129,7 +145,7 @@ class AtomsToGraphs:
         return edge_index, edge_distances, cell_offsets
 
     def convert(self, atoms: ase.Atoms, sid=None):
-        """Convert a single atomic stucture to a graph.
+        """Convert a single atomic structure to a graph.
 
         Args:
             atoms (ase.atoms.Atoms): An ASE atoms object.
@@ -177,14 +193,19 @@ class AtomsToGraphs:
             data.cell_offsets = cell_offsets
         if self.r_energy:
             energy = atoms.get_potential_energy(apply_constraint=False)
-            data.y = energy
+            data.energy = energy
         if self.r_forces:
             forces = torch.Tensor(atoms.get_forces(apply_constraint=False))
-            data.force = forces
+            data.forces = forces
+        if self.r_stress:
+            stress = torch.Tensor(
+                atoms.get_stress(apply_constraint=False, voigt=False)
+            )
+            data.stress = stress
         if self.r_distances and self.r_edges:
             data.distances = edge_distances
         if self.r_fixed:
-            fixed_idx = torch.zeros(natoms)
+            fixed_idx = torch.zeros(natoms, dtype=torch.int)
             if hasattr(atoms, "constraints"):
                 from ase.constraints import FixAtoms
 
@@ -194,6 +215,13 @@ class AtomsToGraphs:
             data.fixed = fixed_idx
         if self.r_pbc:
             data.pbc = torch.tensor(atoms.pbc)
+        if self.r_data_keys is not None:
+            for data_key in self.r_data_keys:
+                data[data_key] = (
+                    atoms.info[data_key]
+                    if isinstance(atoms.info[data_key], (int, float))
+                    else torch.Tensor(atoms.info[data_key])
+                )
 
         return data
 

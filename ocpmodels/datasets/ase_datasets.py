@@ -1,13 +1,22 @@
+"""
+Copyright (c) Meta, Inc. and its affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+"""
+
+from __future__ import annotations
+
 import bisect
 import copy
-import functools
-import glob
 import logging
 import os
 import warnings
 from abc import ABC, abstractmethod
+from functools import cache, reduce
+from glob import glob
 from pathlib import Path
-from typing import List
+from typing import Any, Callable, Optional
 
 import ase
 import numpy as np
@@ -16,8 +25,10 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from ocpmodels.common.registry import registry
+from ocpmodels.datasets._utils import rename_data_object_keys
 from ocpmodels.datasets.lmdb_database import LMDBDatabase
 from ocpmodels.datasets.target_metadata_guesser import guess_property_metadata
+from ocpmodels.modules.transforms import DataTransforms
 from ocpmodels.preprocessing import AtomsToGraphs
 
 
@@ -65,25 +76,39 @@ class AseAtomsDataset(Dataset, ABC):
     """
 
     def __init__(
-        self, config, transform=None, atoms_transform=apply_one_tags
+        self,
+        config: dict,
+        atoms_transform: Callable[
+            [ase.Atoms, Any, ...], ase.Atoms
+        ] = apply_one_tags,
     ) -> None:
         self.config = config
 
-        a2g_args = config.get("a2g_args", {})
-        if a2g_args is None:
-            a2g_args = {}
+        a2g_args = config.get("a2g_args", {}) or {}
+
+        # set default to False if not set by user, assuming otf_graph will be used
+        if "r_edges" not in a2g_args:
+            a2g_args["r_edges"] = False
 
         # Make sure we always include PBC info in the resulting atoms objects
         a2g_args["r_pbc"] = True
         self.a2g = AtomsToGraphs(**a2g_args)
 
-        self.transform = transform
+        self.key_mapping = self.config.get("key_mapping", None)
+        self.transforms = DataTransforms(self.config.get("transforms", {}))
+
         self.atoms_transform = atoms_transform
 
         if self.config.get("keep_in_memory", False):
-            self.__getitem__ = functools.cache(self.__getitem__)
+            self.__getitem__ = cache(self.__getitem__)
 
-        self.ids = self.load_dataset_get_ids(config)
+        self.ids = self._load_dataset_get_ids(config)
+
+        if len(self.ids) == 0:
+            raise ValueError(
+                rf"No valid ase data found!"
+                f"Double check that the src path and/or glob search pattern gives ASE compatible data: {config['src']}"
+            )
 
     def __len__(self) -> int:
         return len(self.ids)
@@ -91,10 +116,10 @@ class AseAtomsDataset(Dataset, ABC):
     def __getitem__(self, idx):
         # Handle slicing
         if isinstance(idx, slice):
-            return [self[i] for i in range(*idx.indices(len(self.ids)))]
+            return [self[i] for i in range(*idx.indices(len(self)))]
 
         # Get atoms object via derived class method
-        atoms = self.get_atoms_object(self.ids[idx])
+        atoms = self.get_atoms(self.ids[idx])
 
         # Transform atoms object
         if self.atoms_transform is not None:
@@ -103,14 +128,6 @@ class AseAtomsDataset(Dataset, ABC):
             )
 
         sid = atoms.info.get("sid", self.ids[idx])
-        try:
-            sid = tensor([sid])
-            warnings.warn(
-                "Supplied sid is not numeric (or missing). Using dataset indices instead."
-            )
-        except:
-            sid = tensor([idx])
-
         fid = atoms.info.get("fid", tensor([0]))
 
         # Convert to data object
@@ -118,11 +135,13 @@ class AseAtomsDataset(Dataset, ABC):
         data_object.fid = fid
         data_object.natoms = len(atoms)
 
-        # Transform data object
-        if self.transform is not None:
-            data_object = self.transform(
-                data_object, **self.config.get("transform_args", {})
+        if self.key_mapping is not None:
+            data_object = rename_data_object_keys(
+                data_object, self.key_mapping
             )
+
+        # Transform data object
+        data_object = self.transforms(data_object)
 
         if self.config.get("include_relaxed_energy", False):
             data_object.y_relaxed = self.get_relaxed_energy(self.ids[idx])
@@ -130,30 +149,36 @@ class AseAtomsDataset(Dataset, ABC):
         return data_object
 
     @abstractmethod
-    def get_atoms_object(self, identifier):
+    def get_atoms(self, idx: str | int) -> ase.Atoms:
         # This function should return an ASE atoms object.
         raise NotImplementedError(
             "Returns an ASE atoms object. Derived classes should implement this function."
         )
 
     @abstractmethod
-    def load_dataset_get_ids(self, config):
+    def _load_dataset_get_ids(self, config):
         # This function should return a list of ids that can be used to index into the database
         raise NotImplementedError(
             "Every ASE dataset needs to declare a function to load the dataset and return a list of ids."
+        )
+
+    @abstractmethod
+    def get_relaxed_energy(self, identifier):
+        raise NotImplementedError(
+            "IS2RE-Direct is not implemented with this dataset."
         )
 
     def close_db(self) -> None:
         # This method is sometimes called by a trainer
         pass
 
-    def guess_target_metadata(self, num_samples: int = 100):
+    def get_metadata(self, num_samples: int = 100) -> dict:
         metadata = {}
 
         if num_samples < len(self):
             metadata["targets"] = guess_property_metadata(
                 [
-                    self.get_atoms_object(self.ids[idx])
+                    self.get_atoms(self.ids[idx])
                     for idx in np.random.choice(
                         len(self), size=(num_samples,), replace=False
                     )
@@ -161,16 +186,10 @@ class AseAtomsDataset(Dataset, ABC):
             )
         else:
             metadata["targets"] = guess_property_metadata(
-                [
-                    self.get_atoms_object(self.ids[idx])
-                    for idx in range(len(self))
-                ]
+                [self.get_atoms(self.ids[idx]) for idx in range(len(self))]
             )
 
         return metadata
-
-    def get_metadata(self):
-        return self.guess_target_metadata()
 
 
 @registry.register_dataset("ase_read")
@@ -196,7 +215,7 @@ class AseReadDataset(AseAtomsDataset):
                     default options will work for most users
 
                     If you are using this for a training dataset, set
-                    "r_energy":True and/or "r_forces":True as appropriate
+                    "r_energy":True, "r_forces":True, and/or "r_stress":True as appropriate
                     In that case, energy/forces must be in the files you read (ex. OUTCAR)
 
             ase_read_args (dict): Keyword arguments for ase.io.read()
@@ -213,14 +232,15 @@ class AseReadDataset(AseAtomsDataset):
 
             transform_args (dict): Additional keyword arguments for the transform callable
 
+            key_mapping (dict[str, str]): Dictionary specifying a mapping between the name of a property used
+                in the model with the corresponding property as it was named in the dataset. Only need to use if
+                the name is different.
+
         atoms_transform (callable, optional): Additional preprocessing function applied to the Atoms
                     object. Useful for applying tags, for example.
-
-        transform (callable, optional): Additional preprocessing function for the Data object
-
     """
 
-    def load_dataset_get_ids(self, config) -> List[Path]:
+    def _load_dataset_get_ids(self, config) -> list[Path]:
         self.ase_read_args = config.get("ase_read_args", {})
 
         if ":" in self.ase_read_args.get("index", ""):
@@ -230,24 +250,26 @@ class AseReadDataset(AseAtomsDataset):
 
         self.path = Path(config["src"])
         if self.path.is_file():
-            raise Exception("The specified src is not a directory")
+            raise ValueError(
+                f"The specified src is not a directory: {self.config['src']}"
+            )
 
         if self.config.get("include_relaxed_energy", False):
             self.relaxed_ase_read_args = copy.deepcopy(self.ase_read_args)
             self.relaxed_ase_read_args["index"] = "-1"
 
-        return list(self.path.glob(f'{config["pattern"]}'))
+        return list(self.path.glob(f'{config.get("pattern", "*")}'))
 
-    def get_atoms_object(self, identifier):
+    def get_atoms(self, idx: str | int) -> ase.Atoms:
         try:
-            atoms = ase.io.read(identifier, **self.ase_read_args)
+            atoms = ase.io.read(idx, **self.ase_read_args)
         except Exception as err:
-            warnings.warn(f"{err} occured for: {identifier}")
+            warnings.warn(f"{err} occured for: {idx}", stacklevel=2)
             raise err
 
         return atoms
 
-    def get_relaxed_energy(self, identifier):
+    def get_relaxed_energy(self, identifier) -> float:
         relaxed_atoms = ase.io.read(identifier, **self.relaxed_ase_read_args)
         return relaxed_atoms.get_potential_energy(apply_constraint=False)
 
@@ -286,7 +308,7 @@ class AseReadMultiStructureDataset(AseAtomsDataset):
                     default options will work for most users
 
                     If you are using this for a training dataset, set
-                    "r_energy":True and/or "r_forces":True as appropriate
+                    "r_energy":True, "r_forces":True, and/or "r_stress":True as appropriate
                     In that case, energy/forces must be in the files you read (ex. OUTCAR)
 
             ase_read_args (dict): Keyword arguments for ase.io.read()
@@ -305,24 +327,28 @@ class AseReadMultiStructureDataset(AseAtomsDataset):
 
             transform_args (dict): Additional keyword arguments for the transform callable
 
+            key_mapping (dict[str, str]): Dictionary specifying a mapping between the name of a property used
+                in the model with the corresponding property as it was named in the dataset. Only need to use if
+                the name is different.
+
         atoms_transform (callable, optional): Additional preprocessing function applied to the Atoms
             object. Useful for applying tags, for example.
 
         transform (callable, optional): Additional preprocessing function for the Data object
     """
 
-    def load_dataset_get_ids(self, config):
+    def _load_dataset_get_ids(self, config) -> list[str]:
         self.ase_read_args = config.get("ase_read_args", {})
         if not hasattr(self.ase_read_args, "index"):
             self.ase_read_args["index"] = ":"
 
         if config.get("index_file", None) is not None:
-            f = open(config["index_file"], "r")
-            index = f.readlines()
+            with open(config["index_file"], "r") as f:
+                index = f.readlines()
 
             ids = []
             for line in index:
-                filename = line.split(" ")[0]
+                filename = line.split(" ", maxsplit=1)[0]
                 for i in range(int(line.split(" ")[1])):
                     ids.append(f"{filename} {i}")
 
@@ -330,8 +356,11 @@ class AseReadMultiStructureDataset(AseAtomsDataset):
 
         self.path = Path(config["src"])
         if self.path.is_file():
-            raise Exception("The specified src is not a directory")
-        filenames = list(self.path.glob(f'{config["pattern"]}'))
+            raise ValueError(
+                f"The specified src is not a directory: {self.config['src']}"
+            )
+
+        filenames = list(self.path.glob(f'{config.get("pattern", "*")}'))
 
         ids = []
 
@@ -341,63 +370,38 @@ class AseReadMultiStructureDataset(AseAtomsDataset):
             try:
                 structures = ase.io.read(filename, **self.ase_read_args)
             except Exception as err:
-                warnings.warn(f"{err} occured for: {filename}")
+                warnings.warn(f"{err} occured for: {filename}", stacklevel=2)
             else:
-                for i, structure in enumerate(structures):
+                for i, _ in enumerate(structures):
                     ids.append(f"{filename} {i}")
 
         return ids
 
-    def get_atoms_object(self, identifier):
+    def get_atoms(self, idx: str) -> ase.Atoms:
         try:
+            identifiers = idx.split(" ")
             atoms = ase.io.read(
-                "".join(identifier.split(" ")[:-1]), **self.ase_read_args
-            )[int(identifier.split(" ")[-1])]
+                "".join(identifiers[:-1]), **self.ase_read_args
+            )[int(identifiers[-1])]
         except Exception as err:
-            warnings.warn(f"{err} occured for: {identifier}")
+            warnings.warn(f"{err} occured for: {idx}", stacklevel=2)
             raise err
 
         if "sid" not in atoms.info:
-            atoms.info["sid"] = "".join(identifier.split(" ")[:-1])
+            atoms.info["sid"] = "".join(identifiers[:-1])
         if "fid" not in atoms.info:
-            atoms.info["fid"] = int(identifier.split(" ")[-1])
+            atoms.info["fid"] = int(identifiers[-1])
 
         return atoms
 
-    def get_metadata(self):
+    def get_metadata(self, num_samples: int = 100) -> dict:
         return {}
 
-    def get_relaxed_energy(self, identifier):
+    def get_relaxed_energy(self, identifier) -> float:
         relaxed_atoms = ase.io.read(
             "".join(identifier.split(" ")[:-1]), **self.ase_read_args
         )[-1]
         return relaxed_atoms.get_potential_energy(apply_constraint=False)
-
-
-class dummy_list(list):
-    def __init__(self, max) -> None:
-        self.max = max
-        return
-
-    def __len__(self):
-        return self.max
-
-    def __getitem__(self, idx):
-        # Handle slicing
-        if isinstance(idx, slice):
-            return [self[i] for i in range(*idx.indices(self.max))]
-
-        # Cast idx as int since it could be a tensor index
-        idx = int(idx)
-
-        # Handle negative indices (referenced from end)
-        if idx < 0:
-            idx += self.max
-
-        if 0 <= idx < self.max:
-            return idx
-        else:
-            raise IndexError
 
 
 @registry.register_dataset("ase_db")
@@ -415,6 +419,7 @@ class AseDBDataset(AseAtomsDataset):
                     - the path an ASE DB,
                     - the connection address of an ASE DB,
                     - a folder with multiple ASE DBs,
+                    - a list of folders with ASE DBs
                     - a glob string to use to find ASE DBs, or
                     - a list of ASE db paths/addresses.
                     If a folder, every file will be attempted as an ASE DB, and warnings
@@ -435,7 +440,7 @@ class AseDBDataset(AseAtomsDataset):
                     default options will work for most users
 
                     If you are using this for a training dataset, set
-                    "r_energy":True and/or "r_forces":True as appropriate
+                    "r_energy":True, "r_forces":True, and/or "r_stress":True as appropriate
                     In that case, energy/forces must be in the database
 
             keep_in_memory (bool): Store data in memory. This helps avoid random reads if you need
@@ -444,23 +449,34 @@ class AseDBDataset(AseAtomsDataset):
 
             atoms_transform_args (dict): Additional keyword arguments for the atoms_transform callable
 
-            transform_args (dict): Additional keyword arguments for the transform callable
+            transforms (dict[str, dict]): Dictionary specifying data transforms as {transform_function: config}
+                    where config is a dictionary specifying arguments to the transform_function
+
+            key_mapping (dict[str, str]): Dictionary specifying a mapping between the name of a property used
+                in the model with the corresponding property as it was named in the dataset. Only need to use if
+                the name is different.
 
         atoms_transform (callable, optional): Additional preprocessing function applied to the Atoms
                     object. Useful for applying tags, for example.
 
-        transform (callable, optional): Additional preprocessing function for the Data object
+        transform (callable, optional): deprecated?
     """
 
-    def load_dataset_get_ids(self, config) -> dummy_list:
+    def _load_dataset_get_ids(self, config: dict) -> list[int]:
         if isinstance(config["src"], list):
-            filepaths = config["src"]
+            if os.path.isdir(config["src"][0]):
+                filepaths = reduce(
+                    lambda x, y: x + y,
+                    (glob(f"{path}/*") for path in config["src"]),
+                )
+            else:
+                filepaths = config["src"]
         elif os.path.isfile(config["src"]):
             filepaths = [config["src"]]
         elif os.path.isdir(config["src"]):
-            filepaths = glob.glob(f'{config["src"]}/*')
+            filepaths = glob(f'{config["src"]}/*')
         else:
-            filepaths = glob.glob(config["src"])
+            filepaths = glob(config["src"])
 
         self.dbs = []
 
@@ -470,7 +486,7 @@ class AseDBDataset(AseAtomsDataset):
                     self.connect_db(path, config.get("connect_args", {}))
                 )
             except ValueError:
-                logging.warning(
+                logging.debug(
                     f"Tried to connect to {path} but it's not an ASE database!"
                 )
 
@@ -488,6 +504,7 @@ class AseDBDataset(AseAtomsDataset):
             if hasattr(db, "ids") and self.select_args == {}:
                 self.db_ids.append(db.ids)
             else:
+                # this is the slow alternative
                 self.db_ids.append(
                     [row.id for row in db.select(**self.select_args)]
                 )
@@ -495,9 +512,16 @@ class AseDBDataset(AseAtomsDataset):
         idlens = [len(ids) for ids in self.db_ids]
         self._idlen_cumulative = np.cumsum(idlens).tolist()
 
-        return dummy_list(sum(idlens))
+        return list(range(sum(idlens)))
 
-    def get_atoms_object(self, idx):
+    def get_atoms(self, idx: int) -> ase.Atoms:
+        """Get atoms object corresponding to datapoint idx. Useful to read other properties not in data object.
+        Args:
+            idx (int): index in dataset
+
+        Returns:
+            atoms: ASE atoms corresponding to datapoint idx
+        """
         # Figure out which db this should be indexed from.
         db_idx = bisect.bisect(self._idlen_cumulative, idx)
 
@@ -510,35 +534,40 @@ class AseDBDataset(AseAtomsDataset):
         atoms_row = self.dbs[db_idx]._get_row(self.db_ids[db_idx][el_idx])
         atoms = atoms_row.toatoms()
 
+        # put data back into atoms info
         if isinstance(atoms_row.data, dict):
             atoms.info.update(atoms_row.data)
 
         return atoms
 
-    def connect_db(self, address, connect_args={}):
+    @staticmethod
+    def connect_db(
+        address: str | Path, connect_args: Optional[dict] = None
+    ) -> ase.db.core.Database:
         if connect_args is None:
             connect_args = {}
         db_type = connect_args.get("type", "extract_from_name")
-        if db_type == "lmdb" or (
-            db_type == "extract_from_name" and address.split(".")[-1] == "lmdb"
+        if db_type in ("lmdb", "aselmdb") or (
+            db_type == "extract_from_name"
+            and str(address).rsplit(".", maxsplit=1)[-1] in ("lmdb", "aselmdb")
         ):
             return LMDBDatabase(address, readonly=True, **connect_args)
-        else:
-            return ase.db.connect(address, **connect_args)
+
+        return ase.db.connect(address, **connect_args)
 
     def close_db(self) -> None:
         for db in self.dbs:
             if hasattr(db, "close"):
                 db.close()
 
-    def get_metadata(self):
+    def get_metadata(self, num_samples: int = 100) -> dict:
         logging.warning(
             "You specific a folder of ASE dbs, so it's impossible to know which metadata to use. Using the first!"
         )
         if self.dbs[0].metadata == {}:
-            return self.guess_target_metadata()
-        else:
-            return copy.deepcopy(self.dbs[0].metadata)
+            return super().get_metadata(num_samples)
+
+        return copy.deepcopy(self.dbs[0].metadata)
 
     def get_relaxed_energy(self, identifier):
         raise NotImplementedError(
