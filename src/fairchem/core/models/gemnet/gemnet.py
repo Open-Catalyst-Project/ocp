@@ -15,10 +15,10 @@ from torch_sparse import SparseTensor
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 from fairchem.core.models.base import BaseModel
+from fairchem.core.models.base_layers import Dense
 from fairchem.core.modules.scaling.compat import load_scales_compat
 
 from .layers.atom_update_block import OutputBlock
-from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
 from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
 from .layers.interaction_block import InteractionBlockTripletsOnly
@@ -34,11 +34,6 @@ class GemNetT(BaseModel):
 
     Parameters
     ----------
-        num_atoms (int): Unused argument
-        bond_feat_dim (int): Unused argument
-        num_targets: int
-            Number of prediction targets.
-
         num_spherical: int
             Controls maximum frequency.
         num_radial: int
@@ -94,9 +89,7 @@ class GemNetT(BaseModel):
 
     def __init__(
         self,
-        num_atoms: int | None,
-        bond_feat_dim: int,
-        num_targets: int,
+        output_targets: dict,
         num_spherical: int,
         num_radial: int,
         num_blocks: int,
@@ -125,14 +118,24 @@ class GemNetT(BaseModel):
         num_elements: int = 83,
         scale_file: str | None = None,
     ):
+        super().__init__(
+            output_targets=output_targets,
+            node_embedding_dim=emb_size_atom,
+            edge_embedding_dim=emb_size_edge,
+        )
+        self.output_targets = output_targets
+
+        # control whether we build the model for the original targets
+        if "energy" in self.output_targets or "forces" in self.output_targets:
+            self.original_targets = True
+
         if cbf is None:
             cbf = {"name": "spherical_harmonics"}
         if envelope is None:
             envelope = {"name": "polynomial", "exponent": 5}
         if rbf is None:
             rbf = {"name": "gaussian"}
-        super().__init__()
-        self.num_targets = num_targets
+        self.num_targets = 1
         assert num_blocks > 0
         self.num_blocks = num_blocks
         self.extensive = extensive
@@ -205,9 +208,7 @@ class GemNetT(BaseModel):
             emb_size_atom, num_radial, emb_size_edge, activation=activation
         )
 
-        out_blocks = []
         int_blocks = []
-
         # Interaction Blocks
         interaction_block = InteractionBlockTripletsOnly  # GemNet-(d)T
         for i in range(num_blocks):
@@ -228,23 +229,26 @@ class GemNetT(BaseModel):
                 )
             )
 
-        for i in range(num_blocks + 1):
-            out_blocks.append(
-                OutputBlock(
-                    emb_size_atom=emb_size_atom,
-                    emb_size_edge=emb_size_edge,
-                    emb_size_rbf=emb_size_rbf,
-                    nHidden=num_atom,
-                    num_targets=num_targets,
-                    activation=activation,
-                    output_init=output_init,
-                    direct_forces=direct_forces,
-                    name=f"OutBlock_{i}",
-                )
-            )
-
-        self.out_blocks = torch.nn.ModuleList(out_blocks)
         self.int_blocks = torch.nn.ModuleList(int_blocks)
+
+        if self.original_targets:
+            out_blocks = []
+            for i in range(num_blocks + 1):
+                out_blocks.append(
+                    OutputBlock(
+                        emb_size_atom=emb_size_atom,
+                        emb_size_edge=emb_size_edge,
+                        emb_size_rbf=emb_size_rbf,
+                        nHidden=num_atom,
+                        num_targets=self.num_targets,
+                        activation=activation,
+                        output_init=output_init,
+                        direct_forces=direct_forces,
+                        name=f"OutBlock_{i}",
+                    )
+                )
+
+            self.out_blocks = torch.nn.ModuleList(out_blocks)
 
         self.shared_parameters = [
             (self.mlp_rbf3.linear.weight, self.num_blocks),
@@ -492,7 +496,7 @@ class GemNetT(BaseModel):
         )
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data):
+    def _forward(self, data):
         pos = data.pos
         batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
@@ -529,8 +533,9 @@ class GemNetT(BaseModel):
         rbf_h = self.mlp_rbf_h(rbf)
         rbf_out = self.mlp_rbf_out(rbf)
 
-        E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
-        # (nAtoms, num_targets), (nEdges, num_targets)
+        if self.original_targets:
+            E_t, F_st = self.out_blocks[0](h, m, rbf_out, idx_t)
+            # (nAtoms, num_targets), (nEdges, num_targets)
 
         for i in range(self.num_blocks):
             # Interaction block
@@ -548,53 +553,61 @@ class GemNetT(BaseModel):
                 idx_t=idx_t,
             )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
 
-            E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t)
-            # (nAtoms, num_targets), (nEdges, num_targets)
-            F_st += F
-            E_t += E
+            if self.original_targets:
+                E, F = self.out_blocks[i + 1](h, m, rbf_out, idx_t)
+                # (nAtoms, num_targets), (nEdges, num_targets)
+                F_st += F
+                E_t += E
 
-        nMolecules = torch.max(batch) + 1
-        if self.extensive:
-            E_t = scatter(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
-            )  # (nMolecules, num_targets)
-        else:
-            E_t = scatter(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
-            )  # (nMolecules, num_targets)
+        outputs = {
+            "edge_idx": idx_t,
+            "edge_vec": V_st,
+            "node_embedding": h,
+            "edge_embedding": m,
+        }
 
-        outputs = {"energy": E_t}
-
-        if self.regress_forces:
-            if self.direct_forces:
-                # map forces in edge directions
-                F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-                # (nEdges, num_targets, 3)
-                F_t = scatter(
-                    F_st_vec,
-                    idx_t,
-                    dim=0,
-                    dim_size=data.atomic_numbers.size(0),
-                    reduce="add",
-                )  # (nAtoms, num_targets, 3)
-                F_t = F_t.squeeze(1)  # (nAtoms, 3)
+        if self.original_targets:
+            nMolecules = torch.max(batch) + 1
+            if self.extensive:
+                E_t = scatter(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
+                )  # (nMolecules, num_targets)
             else:
-                if self.num_targets > 1:
-                    forces = []
-                    for i in range(self.num_targets):
-                        # maybe this can be solved differently
-                        forces += [
-                            -torch.autograd.grad(
-                                E_t[:, i].sum(), pos, create_graph=True
-                            )[0]
-                        ]
-                    F_t = torch.stack(forces, dim=1)
-                    # (nAtoms, num_targets, 3)
-                else:
-                    F_t = -torch.autograd.grad(E_t.sum(), pos, create_graph=True)[0]
-                    # (nAtoms, 3)
+                E_t = scatter(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+                )  # (nMolecules, num_targets)
+            outputs["energy"] = E_t
 
-            outputs["forces"] = F_t
+            if self.regress_forces:
+                if self.direct_forces:
+                    # map forces in edge directions
+                    F_st_vec = F_st[:, :, None] * V_st[:, None, :]
+                    # (nEdges, num_targets, 3)
+                    F_t = scatter(
+                        F_st_vec,
+                        idx_t,
+                        dim=0,
+                        dim_size=data.atomic_numbers.size(0),
+                        reduce="add",
+                    )  # (nAtoms, num_targets, 3)
+                    F_t = F_t.squeeze(1)  # (nAtoms, 3)
+                else:
+                    if self.num_targets > 1:
+                        forces = []
+                        for i in range(self.num_targets):
+                            # maybe this can be solved differently
+                            forces += [
+                                -torch.autograd.grad(
+                                    E_t[:, i].sum(), pos, create_graph=True
+                                )[0]
+                            ]
+                        F_t = torch.stack(forces, dim=1)
+                        # (nAtoms, num_targets, 3)
+                    else:
+                        F_t = -torch.autograd.grad(E_t.sum(), pos, create_graph=True)[0]
+                        # (nAtoms, 3)
+
+                outputs["forces"] = F_t
 
         return outputs
 

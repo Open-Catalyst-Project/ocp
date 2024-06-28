@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import torch
 
-from fairchem.core.models.gemnet_oc.initializers import he_orthogonal_init
-
-from .base_layers import Dense
+from fairchem.core.models.base_layers import Dense
+from fairchem.core.models.initializers import he_orthogonal_init
 
 
 class BasisEmbedding(torch.nn.Module):

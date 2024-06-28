@@ -1,0 +1,130 @@
+trainer: ocp
+
+dataset:
+  train:
+    format: lmdb
+    src: /checkpoint/saro00/mpf_datasets/s2efs/0/train.lmdb
+    key_mapping:
+      y: energy
+      force: forces
+      stress: stress
+    transforms:
+      - decompose_tensor:
+          tensor: stress
+          rank: 2
+          decomposition:
+            isotropic_stress:
+              irrep_dim: 0
+            anisotropic_stress:
+              irrep_dim: 2
+      - flatten:
+          tensor: stress
+      - normalizer:
+          energy:
+            mean: -5.9749126
+            stdev: 1.866159
+          forces:
+            mean: 0
+            stdev: 1.866159
+          isotropic_stress:
+            mean: 43.27065
+            stdev: 674.1657344451734
+          anisotropic_stress:
+            stdev: 143.72764771869745
+  val:
+    src: /checkpoint/saro00/mpf_datasets/s2efs/0/val.lmdb
+
+logger: wandb
+
+loss_functions:
+  - energy:
+      fn: mae
+      coefficient: 1
+  - forces:
+      fn: l2mae
+      coefficient: 10
+  - isotropic_stress:
+      fn: mae
+      coefficient: 10
+  - anisotropic_stress:
+      fn: mae
+      coefficient: 10
+
+evaluation_metrics:
+  metrics:
+    energy:
+      - mae
+      - mse
+      - energy_within_threshold
+    forces:
+      - mae
+      - cosine_similarity
+    isotropic_stress:
+      - mae
+    anisotropic_stress:
+      - mae
+    stress:
+      - mae
+    misc:
+      - energy_forces_within_threshold
+  primary_metric: forces_mae
+
+outputs:
+  energy:
+    shape: 1
+    level: system
+    default_head: False
+  forces:
+    level: atom
+    irrep_dim: 1
+    train_on_free_atoms: True
+    eval_on_free_atoms: True
+    default_head: False
+  stress:
+    level: system
+    default_head: True
+    use_sphere_s2: True
+    reduce: mean
+    decomposition:
+      isotropic_stress:
+        irrep_dim: 0
+      anisotropic_stress:
+        irrep_dim: 2
+
+model:
+  name: escn
+  num_layers: 12
+  max_neighbors: 20
+  max_num_elements: 100
+  cutoff: 12.0
+  sphere_channels: 128
+  hidden_channels: 256
+  lmax_list: [6]
+  mmax_list: [2]
+  num_sphere_samples: 128
+  distance_function: "gaussian"
+  regress_forces: True
+  use_pbc: True
+  basis_width_scalar: 2.0
+  otf_graph: True
+
+optim:
+  batch_size: 6
+  eval_batch_size: 6
+  num_workers: 8
+  lr_initial: 0.0008
+  optimizer: AdamW
+  optimizer_params: {"amsgrad": True}
+  eval_every: 5000
+  lr_gamma: 0.3
+  lr_milestones: # epochs at which lr_initial <- lr_initial * lr_gamma
+    - 218750
+    - 281250
+    - 343750
+  warmup_steps: 100
+  warmup_factor: 0.2
+  max_epochs: 24
+  clip_grad_norm: 20
+  ema_decay: 0.999
+  loss_energy: mae
+  loss_force: l2mae

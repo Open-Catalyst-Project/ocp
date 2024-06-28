@@ -11,8 +11,7 @@ import numpy as np
 import torch
 
 from fairchem.core.common import gp_utils
-
-from .base_layers import Dense
+from fairchem.core.models.base_layers import Dense
 
 
 class AtomEmbedding(torch.nn.Module):

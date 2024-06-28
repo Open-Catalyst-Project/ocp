@@ -1,5 +1,5 @@
 """
-Copyright (c) Facebook, Inc. and its affiliates.
+Copyright (c) Meta, Inc. and its affiliates.
 
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
@@ -7,16 +7,14 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
-import io
 import os
 
 import pytest
-import requests
 import torch
 from ase.io import read
 
 from fairchem.core.common.registry import registry
-from fairchem.core.common.utils import load_state_dict, setup_imports
+from fairchem.core.common.utils import setup_imports
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.models.equiformer_v2.so3 import (
     CoefficientMappingModule,
@@ -47,19 +45,30 @@ def load_model(request):
     torch.manual_seed(4)
     setup_imports()
 
-    # download and load weights.
-    checkpoint_url = "https://dl.fbaipublicfiles.com/opencatalystproject/models/2023_06/oc20/s2ef/eq2_31M_ec4_allmd.pt"
+    # TODO: can switch to loading checkpoint when S2EFS models become available
+    # # download and load weights.
+    # checkpoint_url = TODO
 
-    # load buffer into memory as a stream
-    # and then load it with torch.load
-    r = requests.get(checkpoint_url, stream=True)
-    r.raise_for_status()
-    checkpoint = torch.load(io.BytesIO(r.content), map_location=torch.device("cpu"))
+    # # load buffer into memory as a stream
+    # # and then load it with torch.load
+    # r = requests.get(checkpoint_url, stream=True)
+    # r.raise_for_status()
+    # checkpoint = torch.load(
+    #     io.BytesIO(r.content), map_location=torch.device("cpu")
+    # )
 
     model = registry.get_model_class("equiformer_v2")(
-        None,
-        -1,
-        1,
+        {
+            "energy": {},
+            "energy_arb": {"default_head": True, "shape": 1},
+            "forces": {},
+            "forces_arb": {
+                "default_head": True,
+                "irrep_dim": 1,
+                "level": "atom",
+            },
+            "stress_anisotropic": {"default_head": True, "irrep_dim": 2},
+        },
         use_pbc=True,
         regress_forces=True,
         otf_graph=True,
@@ -93,8 +102,10 @@ def load_model(request):
         weight_init="uniform",
     )
 
-    new_dict = {k[len("module.") * 2 :]: v for k, v in checkpoint["state_dict"].items()}
-    load_state_dict(model, new_dict)
+    # new_dict = {
+    #     k[len("module.") * 2 :]: v for k, v in checkpoint["state_dict"].items()
+    # }
+    # load_state_dict(model, new_dict)
 
     # Precision errors between mac vs. linux compound with multiple layers,
     # so we explicitly set the number of layers to 1 (instead of all 8).
@@ -112,6 +123,8 @@ class TestEquiformerV2:
 
         # Pass it through the model.
         outputs = self.model(data_list_collater([data]))
+
+        # hard-coded outputs
         energy, forces = outputs["energy"], outputs["forces"]
 
         assert snapshot == energy.shape
@@ -119,6 +132,19 @@ class TestEquiformerV2:
 
         assert snapshot == forces.shape
         assert snapshot == pytest.approx(forces.detach().mean(0))
+
+        # arbitrary output heads
+        energy_arb, forces_arb = outputs["energy_arb"], outputs["forces_arb"]
+        stress_anisotropic = outputs["stress_anisotropic"]
+
+        assert snapshot == energy_arb.shape
+        # assert snapshot == pytest.approx(energy_arb.detach())
+
+        assert snapshot == forces_arb.shape
+        # assert snapshot == pytest.approx(forces_arb.detach().mean(0))
+
+        assert snapshot == stress_anisotropic.shape
+        # assert snapshot == pytest.approx(stress_anisotropic.detach())
 
 
 class TestMPrimaryLPrimary:
@@ -148,10 +174,10 @@ class TestMPrimaryLPrimary:
                 L2: -2.02 -2.01 2.00 2.01 2.02 ~ L2M(-2),L2M(-1),L2M0,L2M1,L2M2
                 """
                 test_matrix_lp = []
-                for l in range(lmax + 1):
-                    max_m = min(l, mmax)
+                for ll in range(lmax + 1):
+                    max_m = min(ll, mmax)
                     for m in range(-max_m, max_m + 1):
-                        v = l * sign(m) + 0.01 * m  # +/- l . 00 m
+                        v = ll * sign(m) + 0.01 * m  # +/- l . 00 m
                         test_matrix_lp.append(v)
 
                 test_matrix_lp = (
@@ -165,12 +191,12 @@ class TestMPrimaryLPrimary:
                 """
                 test_matrix_mp = []
                 for m in range(max_m + 1):
-                    for l in range(m, lmax + 1):
-                        v = l + 0.01 * m  # +/- l . 00 m
+                    for ll in range(m, lmax + 1):
+                        v = ll + 0.01 * m  # +/- l . 00 m
                         test_matrix_mp.append(v)
                     if m > 0:
-                        for l in range(m, lmax + 1):
-                            v = -(l + 0.01 * m)  # +/- l . 00 m
+                        for ll in range(m, lmax + 1):
+                            v = -(ll + 0.01 * m)  # +/- l . 00 m
                             test_matrix_mp.append(v)
 
                 test_matrix_mp = (

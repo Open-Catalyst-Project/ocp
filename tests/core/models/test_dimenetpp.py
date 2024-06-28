@@ -47,9 +47,7 @@ def load_model(request) -> None:
     setup_imports()
 
     model = registry.get_model_class("dimenetplusplus")(
-        None,
-        32,
-        1,
+        output_targets={"energy": {}, "forces": {}},
         cutoff=6.0,
         regress_forces=True,
         use_pbc=False,

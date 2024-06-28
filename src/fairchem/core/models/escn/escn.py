@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 import time
 
 import torch
@@ -64,9 +65,7 @@ class eSCN(BaseModel):
 
     def __init__(
         self,
-        num_atoms: int,  # not used
-        bond_feat_dim: int,  # not used
-        num_targets: int,  # not used
+        output_targets: dict,
         use_pbc: bool = True,
         regress_forces: bool = True,
         otf_graph: bool = False,
@@ -86,13 +85,15 @@ class eSCN(BaseModel):
         distance_resolution: float = 0.02,
         show_timing_info: bool = False,
     ) -> None:
+        super().__init__(
+            output_targets=output_targets,
+            node_embedding_dim=hidden_channels,
+            edge_embedding_dim=edge_channels,
+        )
         if mmax_list is None:
             mmax_list = [2]
         if lmax_list is None:
             lmax_list = [6]
-        super().__init__()
-
-        import sys
 
         if "e3nn" not in sys.modules:
             logging.error("You need to install the e3nn library to use the SCN model")
@@ -195,10 +196,11 @@ class eSCN(BaseModel):
             self.layer_blocks.append(block)
 
         # Output blocks for energy and forces
-        self.energy_block = EnergyBlock(
-            self.sphere_channels_all, self.num_sphere_samples, self.act
-        )
-        if self.regress_forces:
+        if "energy" in self.output_targets:
+            self.energy_block = EnergyBlock(
+                self.sphere_channels_all, self.num_sphere_samples, self.act
+            )
+        if "forces" in self.output_targets and self.regress_forces:
             self.force_block = ForceBlock(
                 self.sphere_channels_all, self.num_sphere_samples, self.act
             )
@@ -224,7 +226,7 @@ class eSCN(BaseModel):
         self.sphharm_weights = nn.ParameterList(sphharm_weights)
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data):
+    def _forward(self, data):
         device = data.pos.device
         self.batch_size = len(data.natoms)
         self.dtype = data.pos.dtype
@@ -332,30 +334,36 @@ class eSCN(BaseModel):
 
         x_pt = x_pt.view(-1, self.sphere_channels_all)
 
+        outputs = {}
+        outputs["sphere_values"] = x_pt
+        outputs["sphere_points"] = self.sphere_points
+
         ###############################################################
         # Energy estimation
         ###############################################################
-        node_energy = self.energy_block(x_pt)
-        energy = torch.zeros(len(data.natoms), device=device)
-        energy.index_add_(0, data.batch, node_energy.view(-1))
-        # Scale energy to help balance numerical precision w.r.t. forces
-        energy = energy * 0.001
+        if "energy" in self.output_targets:
+            node_energy = self.energy_block(x_pt)
+            energy = torch.zeros(len(data.natoms), device=device)
+            energy.index_add_(0, data.batch, node_energy.view(-1))
+            # Scale energy to help balance numerical precision w.r.t. forces
+            energy = energy * 0.001
+            outputs["energy"] = energy
 
         outputs = {"energy": energy}
         ###############################################################
         # Force estimation
         ###############################################################
-        if self.regress_forces:
+        if "forces" in self.output_targets and self.regress_forces:
             forces = self.force_block(x_pt, self.sphere_points)
             outputs["forces"] = forces
 
-        if self.show_timing_info is True:
+        if self.show_timing_info:
             torch.cuda.synchronize()
             logging.info(
                 f"{self.counter} Time: {time.time() - start_time}\tMemory: {len(data.pos)}\t{torch.cuda.max_memory_allocated() / 1000000}"
             )
 
-        self.counter = self.counter + 1
+            self.counter = self.counter + 1
 
         return outputs
 

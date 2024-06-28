@@ -16,10 +16,10 @@ from fairchem.core.common import gp_utils
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 from fairchem.core.models.base import BaseModel
+from fairchem.core.models.base_layers import Dense
 from fairchem.core.modules.scaling.compat import load_scales_compat
 
 from .layers.atom_update_block import OutputBlock
-from .layers.base_layers import Dense
 from .layers.efficient import EfficientInteractionDownProjection
 from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
 from .layers.interaction_block import InteractionBlockTripletsOnly

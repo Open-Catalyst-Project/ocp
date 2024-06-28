@@ -11,9 +11,8 @@ import math
 import torch
 
 from fairchem.core.common.utils import scatter_det
+from fairchem.core.models.base_layers import Dense, ResidualLayer
 from fairchem.core.modules.scaling import ScaleFactor
-
-from .base_layers import Dense, ResidualLayer
 
 
 class AtomUpdateBlock(torch.nn.Module):

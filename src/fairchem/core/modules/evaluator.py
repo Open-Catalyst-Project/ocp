@@ -88,7 +88,7 @@ class Evaluator:
         self,
         prediction: dict[str, torch.Tensor],
         target: dict[str, torch.Tensor],
-        prev_metrics=None,
+        prev_metrics: dict | None = None,
     ):
         if prev_metrics is None:
             prev_metrics = {}

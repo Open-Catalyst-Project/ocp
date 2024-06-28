@@ -12,10 +12,10 @@ import math
 import torch
 
 from fairchem.core.common import gp_utils
+from fairchem.core.models.base_layers import Dense, ResidualLayer
 from fairchem.core.modules.scaling import ScaleFactor
 
 from .atom_update_block import AtomUpdateBlock
-from .base_layers import Dense, ResidualLayer
 from .efficient import EfficientInteractionBilinear
 from .embedding_block import EdgeEmbedding
 

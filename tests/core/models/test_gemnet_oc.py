@@ -58,9 +58,7 @@ def load_model(request) -> None:
     checkpoint = torch.load(io.BytesIO(r.content), map_location=torch.device("cpu"))
 
     model = registry.get_model_class("gemnet_oc")(
-        None,
-        -1,
-        1,
+        output_targets={"energy": {}, "forces": {}},
         num_spherical=7,
         num_radial=128,
         num_blocks=4,

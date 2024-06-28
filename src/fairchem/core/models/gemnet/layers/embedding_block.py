@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .base_layers import Dense
+from fairchem.core.models.base_layers import Dense
 
 
 class AtomEmbedding(torch.nn.Module):

@@ -35,9 +35,7 @@ class TestGemNetOC:
         checkpoint = torch.load(io.BytesIO(r.content), map_location=torch.device("cpu"))
 
         model = registry.get_model_class("gemnet_oc")(
-            None,
-            -1,
-            1,
+            output_targets={"energy": {}, "forces": {}},
             num_spherical=7,
             num_radial=128,
             num_blocks=4,
@@ -111,9 +109,7 @@ class TestGemNetOC:
         checkpoint = torch.load(io.BytesIO(r.content), map_location=torch.device("cpu"))
 
         model = registry.get_model_class("gemnet_oc")(
-            None,
-            -1,
-            1,
+            output_targets={"energy": {}, "forces": {}},
             num_spherical=7,
             num_radial=128,
             num_blocks=4,
@@ -189,9 +185,7 @@ class TestGemNetOC:
 
         with pytest.raises(ValueError):
             registry.get_model_class("gemnet_oc")(
-                None,
-                -1,
-                1,
+                output_targets={"energy": {}, "forces": {}},
                 num_spherical=7,
                 num_radial=128,
                 num_blocks=4,
@@ -245,9 +239,7 @@ class TestGemNetOC:
         setup_imports()
 
         model = registry.get_model_class("gemnet_oc")(
-            None,
-            -1,
-            1,
+            output_targets={"energy": {}, "forces": {}},
             num_spherical=7,
             num_radial=128,
             num_blocks=4,

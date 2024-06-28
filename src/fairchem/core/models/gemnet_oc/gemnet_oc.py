@@ -1,5 +1,6 @@
 """
 Copyright (c) Meta, Inc. and its affiliates.
+
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
@@ -19,12 +20,12 @@ from fairchem.core.common.utils import (
     scatter_det,
 )
 from fairchem.core.models.base import BaseModel
+from fairchem.core.models.base_layers import Dense, ResidualLayer
+from fairchem.core.models.initializers import get_initializer
 from fairchem.core.modules.scaling.compat import load_scales_compat
 
-from .initializers import get_initializer
 from .interaction_indices import get_mixed_triplets, get_quadruplets, get_triplets
 from .layers.atom_update_block import OutputBlock
-from .layers.base_layers import Dense, ResidualLayer
 from .layers.efficient import BasisEmbedding
 from .layers.embedding_block import AtomEmbedding, EdgeEmbedding
 from .layers.force_scaler import ForceScaler
@@ -46,11 +47,6 @@ class GemNetOC(BaseModel):
     """
     Arguments
     ---------
-    num_atoms (int): Unused argument
-    bond_feat_dim (int): Unused argument
-    num_targets: int
-        Number of prediction targets.
-
     num_spherical: int
         Controls maximum frequency.
     num_radial: int
@@ -179,9 +175,7 @@ class GemNetOC(BaseModel):
 
     def __init__(
         self,
-        num_atoms: int | None,
-        bond_feat_dim: int,
-        num_targets: int,
+        output_targets: dict,
         num_spherical: int,
         num_radial: int,
         num_blocks: int,
@@ -236,6 +230,11 @@ class GemNetOC(BaseModel):
         scale_file: str | None = None,
         **kwargs,  # backwards compatibility with deprecated arguments
     ) -> None:
+        super().__init__(
+            output_targets=output_targets,
+            node_embedding_dim=emb_size_atom,
+            edge_embedding_dim=emb_size_edge,
+        )
         if qint_tags is None:
             qint_tags = [0, 1, 2]
         if sbf is None:
@@ -246,14 +245,21 @@ class GemNetOC(BaseModel):
             envelope = {"name": "polynomial", "exponent": 5}
         if rbf is None:
             rbf = {"name": "gaussian"}
-        super().__init__()
         if len(kwargs) > 0:
             logging.warning(f"Unrecognized arguments: {list(kwargs.keys())}")
-        self.num_targets = num_targets
         assert num_blocks > 0
+        self.output_targets = output_targets
         self.num_blocks = num_blocks
         self.extensive = extensive
 
+        self.use_model_energy_head = (
+            "energy" in self.output_targets
+            and not self.output_targets["energy"].get("default_head", False)
+        )
+        self.use_model_forces_head = (
+            "forces" in self.output_targets
+            and not self.output_targets["forces"].get("default_head", False)
+        )
         self.atom_edge_interaction = atom_edge_interaction
         self.edge_atom_interaction = edge_atom_interaction
         self.atom_interaction = atom_interaction
@@ -357,8 +363,13 @@ class GemNetOC(BaseModel):
             for _ in range(num_global_out_layers)
         ]
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
-        self.out_energy = Dense(emb_size_atom, num_targets, bias=False, activation=None)
-        if direct_forces:
+        # backwards compatibility
+        out_initializer = get_initializer(output_init)
+        if self.use_model_energy_head:
+            self.out_energy = Dense(emb_size_atom, 1, bias=False, activation=None)
+            self.out_energy.reset_parameters(out_initializer)
+
+        if self.direct_forces:
             out_mlp_F = [
                 Dense(
                     emb_size_edge * (num_blocks + 1),
@@ -373,13 +384,8 @@ class GemNetOC(BaseModel):
                 for _ in range(num_global_out_layers)
             ]
             self.out_mlp_F = torch.nn.Sequential(*out_mlp_F)
-            self.out_forces = Dense(
-                emb_size_edge, num_targets, bias=False, activation=None
-            )
-
-        out_initializer = get_initializer(output_init)
-        self.out_energy.reset_parameters(out_initializer)
-        if direct_forces:
+        if self.use_model_forces_head:
+            self.out_forces = Dense(emb_size_edge, 1, bias=False, activation=None)
             self.out_forces.reset_parameters(out_initializer)
 
         load_scales_compat(self, scale_file)
@@ -864,9 +870,7 @@ class GemNetOC(BaseModel):
 
         empty_image = subgraph["num_neighbors"] == 0
         if torch.any(empty_image):
-            raise ValueError(
-                f"An image has no neighbors: sid={data.sid[empty_image]}"
-            )
+            raise ValueError(f"An image has no neighbors: sid={data.sid[empty_image]}")
         return subgraph
 
     def generate_graph_dict(self, data, cutoff, max_neighbors):
@@ -1195,7 +1199,7 @@ class GemNetOC(BaseModel):
         )
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data):
+    def _forward(self, data):
         pos = data.pos
         batch = data.batch
         atomic_numbers = data.atomic_numbers.long()
@@ -1274,60 +1278,70 @@ class GemNetOC(BaseModel):
             xs_E.append(x_E)
             xs_F.append(x_F)
 
-        # Global output block for final predictions
+        nMolecules = torch.max(batch) + 1
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1))
         if self.direct_forces:
             x_F = self.out_mlp_F(torch.cat(xs_F, dim=-1))
-        with torch.cuda.amp.autocast(False):
-            E_t = self.out_energy(x_E.float())
-            if self.direct_forces:
-                F_st = self.out_forces(x_F.float())
 
-        nMolecules = torch.max(batch) + 1
-        if self.extensive:
-            E_t = scatter_det(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
-            )  # (nMolecules, num_targets)
-        else:
-            E_t = scatter_det(
-                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
-            )  # (nMolecules, num_targets)
+        outputs = {
+            "edge_idx": idx_t,
+            "edge_vec": main_graph["vector"],
+            "node_embedding": x_E,
+            "edge_embedding": x_F,
+        }
 
-        E_t = E_t.squeeze(1)  # (num_molecules)
-        outputs = {"energy": E_t}
-        if self.regress_forces:
-            if self.direct_forces:
-                if self.forces_coupled:  # enforce F_st = F_ts
-                    nEdges = idx_t.shape[0]
-                    id_undir = repeat_blocks(
-                        main_graph["num_neighbors"] // 2,
-                        repeats=2,
-                        continuous_indexing=True,
-                    )
-                    F_st = scatter_det(
-                        F_st,
-                        id_undir,
-                        dim=0,
-                        dim_size=int(nEdges / 2),
-                        reduce="mean",
-                    )  # (nEdges/2, num_targets)
-                    F_st = F_st[id_undir]  # (nEdges, num_targets)
+        # Global output block for final predictions
+        if self.use_model_energy_head:
+            with torch.cuda.amp.autocast(False):
+                E_t = self.out_energy(x_E.float())
 
-                # map forces in edge directions
-                F_st_vec = F_st[:, :, None] * main_graph["vector"][:, None, :]
-                # (nEdges, num_targets, 3)
-                F_t = scatter_det(
-                    F_st_vec,
-                    idx_t,
-                    dim=0,
-                    dim_size=num_atoms,
-                    reduce="add",
-                )  # (nAtoms, num_targets, 3)
+            if self.extensive:
+                E_t = scatter_det(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
+                )  # (nMolecules, 1)
             else:
-                F_t = self.force_scaler.calc_forces_and_update(E_t, pos)
+                E_t = scatter_det(
+                    E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+                )  # (nMolecules, 1)
+            E_t = E_t.squeeze(1)  # (num_molecules)
+            outputs["energy"] = E_t
+
+        if self.use_model_forces_head:
+            if self.regress_forces:
+                if self.direct_forces:
+                    with torch.cuda.amp.autocast(False):
+                        F_st = self.out_forces(x_F.float())
+
+                    if self.forces_coupled:  # enforce F_st = F_ts
+                        nEdges = idx_t.shape[0]
+                        id_undir = repeat_blocks(
+                            main_graph["num_neighbors"] // 2,
+                            repeats=2,
+                            continuous_indexing=True,
+                        )
+                        F_st = scatter_det(
+                            F_st,
+                            id_undir,
+                            dim=0,
+                            dim_size=int(nEdges / 2),
+                            reduce="mean",
+                        )  # (nEdges/2, 1)
+                        F_st = F_st[id_undir]  # (nEdges, 1)
+
+                    # map forces in edge directions
+                    F_st_vec = F_st[:, :, None] * main_graph["vector"][:, None, :]
+                    # (nEdges, 1, 3)
+                    F_t = scatter_det(
+                        F_st_vec,
+                        idx_t,
+                        dim=0,
+                        dim_size=num_atoms,
+                        reduce="add",
+                    )  # (nAtoms, 1, 3)
+                else:
+                    F_t = self.force_scaler.calc_forces_and_update(E_t, pos)
 
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
-
             outputs["forces"] = F_t
 
         return outputs

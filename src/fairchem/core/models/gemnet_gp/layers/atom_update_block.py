@@ -12,10 +12,9 @@ from torch_scatter import scatter
 from torch_scatter.utils import broadcast
 
 from fairchem.core.common import gp_utils
-from fairchem.core.models.gemnet_gp.initializers import he_orthogonal_init
+from fairchem.core.models.base_layers import Dense, ResidualLayer
+from fairchem.core.models.initializers import he_orthogonal_init
 from fairchem.core.modules.scaling import ScaleFactor
-
-from .base_layers import Dense, ResidualLayer
 
 
 def scatter_sum(

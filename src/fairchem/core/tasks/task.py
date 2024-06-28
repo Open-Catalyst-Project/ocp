@@ -90,7 +90,7 @@ class RelaxationTask(BaseTask):
     def run(self) -> None:
         assert isinstance(
             self.trainer, OCPTrainer
-        ), "Relaxations are only possible for ForcesTrainer"
+        ), "Relaxations are only possible for OCPTrainer"
         assert (
             self.trainer.relax_dataset is not None
         ), "Relax dataset is required for making predictions"

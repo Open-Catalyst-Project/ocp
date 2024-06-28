@@ -52,3 +52,11 @@ def decompose_tensor(data_object, config) -> Data:
         ]
 
     return data_object
+
+
+def flatten(data_object, config) -> Data:
+    tensor_key = config["tensor"]
+
+    data_object[tensor_key] = data_object[tensor_key].reshape(1, -1)
+
+    return data_object

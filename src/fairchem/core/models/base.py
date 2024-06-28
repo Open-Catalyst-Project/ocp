@@ -8,27 +8,199 @@ LICENSE file in the root directory of this source tree.
 from __future__ import annotations
 
 import logging
+from abc import abstractmethod
+from collections import defaultdict
 
 import torch
 import torch.nn as nn
+from e3nn import o3
 from torch_geometric.nn import radius_graph
 
 from fairchem.core.common.utils import (
+    cg_change_mat,
     compute_neighbors,
     get_pbc_distances,
+    irreps_sum,
     radius_graph_pbc,
+    scatter_det,
 )
+
+from .base_layers import Dense
 
 
 class BaseModel(nn.Module):
-    def __init__(self, num_atoms=None, bond_feat_dim=None, num_targets=None) -> None:
-        super().__init__()
-        self.num_atoms = num_atoms
-        self.bond_feat_dim = bond_feat_dim
-        self.num_targets = num_targets
+    def __init__(
+        self,
+        output_targets: dict | None = None,
+        node_embedding_dim=None,
+        edge_embedding_dim=None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+
+        self.output_targets = output_targets or {}
+        self.num_targets = len(output_targets)
+
+        self.module_dict = nn.ModuleDict({})
+        for target in output_targets:
+            if self.output_targets[target].get("default_head", False):
+                if "decomposition" in self.output_targets[target]:
+                    # If decomposed, we only need heads for the individual components
+                    continue
+
+                if "irrep_dim" in self.output_targets[target]:
+                    if edge_embedding_dim is None:
+                        raise NotImplementedError(
+                            "Model does not support SO(3) equivariant prediction without edge embeddings."
+                        )
+                    embedding_dim = edge_embedding_dim
+                    output_shape = 1
+                else:
+                    embedding_dim = node_embedding_dim
+                    output_shape = self.output_targets[target].get("shape", 1)
+
+                layers = [
+                    Dense(
+                        embedding_dim,
+                        embedding_dim,
+                        activation="silu",
+                    )
+                    for _ in range(self.output_targets[target].get("num_layers", 2) - 1)
+                ]
+
+                layers.append(Dense(embedding_dim, output_shape, activation=None))
+
+                self.module_dict[target] = nn.Sequential(*layers)
 
     def forward(self, data):
-        raise NotImplementedError
+        batch = data.batch
+        self.device = data.pos.device
+        self.num_atoms = data.atomic_numbers.shape[0]
+        self.num_systems = data.natoms.shape[0]
+
+        # call declared model forward pass
+        out = self._forward(data)
+        results = {}
+
+        for target in self.output_targets:
+            # Skip parent decomposed targets. The components should exist separately
+            if "decomposition" in self.output_targets[target]:
+                continue
+
+            ### for models that directly return desired property, add directly
+            if target not in self.module_dict:
+                pred = out[target]
+                # squeeze if necessary
+                if len(pred.shape) > 1:
+                    pred = pred.squeeze(dim=1)
+
+                results[target] = pred
+                continue
+
+            assert (
+                target not in out
+            ), f"{target} is explicitly returned, but also has a default head"
+
+            # equivariant prediction
+            if "irrep_dim" in self.output_targets[target]:
+                pred = self.forward_irrep(out, target)
+            # scalar prediction
+            else:
+                pred = self.module_dict[target](out["node_embedding"])
+
+            # (batch, output_shape)
+            if self.output_targets[target].get("level", "system") == "system":
+                pred = scatter_det(
+                    pred,
+                    batch,
+                    dim=0,
+                    dim_size=self.num_systems,
+                    reduce=self.output_targets[target].get("reduce", "add"),
+                )
+
+            results[target] = pred.squeeze(1)
+
+        self.construct_parent_tensor(results)
+
+        return results
+
+    def forward_irrep(self, out, target):
+        """
+        For equivariant properties, make use of spherical harmonics to ensure
+        SO(3) equivariance.
+        """
+        irrep = self.output_targets[target]["irrep_dim"]
+
+        ### Compute spherical harmonics based on edge vectors
+        assert "edge_vec" in out
+        assert "edge_idx" in out
+        assert "edge_embedding" in out
+
+        edge_vec = out["edge_vec"]
+        edge_idx = out["edge_idx"]
+
+        # (nedges, (2*irrep_dim+1))
+        sphharm = o3.spherical_harmonics(irrep, edge_vec, True).detach()
+        # (nedges, 1)
+        pred = self.module_dict[target](out["edge_embedding"])
+        # (nedges, 2*irrep_dim+1)
+        pred = pred * sphharm
+
+        # aggregate edges per node
+        # (nnodes, 2*irrep_dim+1)
+        return scatter_det(pred, edge_idx, dim=0, dim_size=self.num_atoms, reduce="add")
+
+    def construct_parent_tensor(self, results):
+        parent_construction = defaultdict(dict)
+
+        # Identify target properties that are decomposition of parent property
+        for target in self.output_targets:
+            if "parent" in self.output_targets[target]:
+                parent_target = self.output_targets[target]["parent"]
+                irrep_dim = self.output_targets[target]["irrep_dim"]
+                ### NOTE: Only supports rank 2 tensors
+                ### TODO: Remove dictionary structure when rank 3 tensors are supported
+                parent_construction[parent_target][irrep_dim] = target
+
+        # Construct parent tensors from predicted irreps
+        for parent_target in parent_construction:
+            rank = max(parent_construction[parent_target].keys())
+            cg_matrix = cg_change_mat(rank, self.device)
+
+            # TODO: handle per-atom vs per-system properties
+            prediction_irreps = torch.zeros(
+                (self.num_systems, irreps_sum(rank)), device=self.device
+            )
+
+            # Rank 2 support
+            for irrep in range(rank + 1):
+                if irrep in parent_construction[parent_target]:
+                    # (batch, 2*irrep+1)
+                    prediction_irreps[
+                        :, max(0, irreps_sum(irrep - 1)) : irreps_sum(irrep)
+                    ] = results[parent_construction[parent_target][irrep]].view(
+                        -1, 2 * irrep + 1
+                    )
+
+            # NOTE: AMP will return this as a float-16 tensor
+            parent_prediction = torch.mm(prediction_irreps, cg_matrix)
+
+            results[parent_target] = parent_prediction
+
+    @abstractmethod
+    def _forward(self, data):
+        """
+        Derived models should implement this function. Expected output should
+        be in the following format:
+
+            out = {
+                "output_property_1": pred_1,
+                "output_property_2": pred_2,
+            }
+
+        Where `output_property` are the desired model outputs as defined in the
+        `outputs` section of the model config.
+        """
 
     def generate_graph(
         self,

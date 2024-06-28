@@ -10,10 +10,9 @@ from __future__ import annotations
 import torch
 from torch_scatter import scatter
 
-from fairchem.core.models.gemnet.initializers import he_orthogonal_init
+from fairchem.core.models.base_layers import Dense, ResidualLayer
+from fairchem.core.models.initializers import he_orthogonal_init
 from fairchem.core.modules.scaling import ScaleFactor
-
-from .base_layers import Dense, ResidualLayer
 
 
 class AtomUpdateBlock(torch.nn.Module):

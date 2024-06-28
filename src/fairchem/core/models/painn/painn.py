@@ -41,7 +41,7 @@ from torch_scatter import scatter, segment_coo
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 from fairchem.core.models.base import BaseModel
-from fairchem.core.models.gemnet.layers.base_layers import ScaledSiLU
+from fairchem.core.models.base_layers import ScaledSiLU
 from fairchem.core.models.gemnet.layers.embedding_block import AtomEmbedding
 from fairchem.core.models.gemnet.layers.radial_basis import RadialBasis
 from fairchem.core.modules.scaling import ScaleFactor
@@ -59,9 +59,7 @@ class PaiNN(BaseModel):
 
     def __init__(
         self,
-        num_atoms: int,
-        bond_feat_dim: int,
-        num_targets: int,
+        output_targets: dict,
         hidden_channels: int = 512,
         num_layers: int = 6,
         num_rbf: int = 128,
@@ -76,12 +74,17 @@ class PaiNN(BaseModel):
         num_elements: int = 83,
         scale_file: str | None = None,
     ) -> None:
+        super().__init__(
+            output_targets=output_targets,
+            node_embedding_dim=hidden_channels,
+            edge_embedding_dim=None,
+        )
         if envelope is None:
             envelope = {"name": "polynomial", "exponent": 5}
         if rbf is None:
             rbf = {"name": "gaussian"}
-        super().__init__()
 
+        self.output_targets = output_targets
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
         self.num_rbf = num_rbf
@@ -116,13 +119,18 @@ class PaiNN(BaseModel):
             self.update_layers.append(PaiNNUpdate(hidden_channels))
             setattr(self, "upd_out_scalar_scale_%d" % i, ScaleFactor())
 
-        self.out_energy = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels // 2),
-            ScaledSiLU(),
-            nn.Linear(hidden_channels // 2, 1),
-        )
+        if "energy" in self.output_targets:
+            self.out_energy = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels // 2),
+                ScaledSiLU(),
+                nn.Linear(hidden_channels // 2, 1),
+            )
 
-        if self.regress_forces is True and self.direct_forces is True:
+        if (
+            self.regress_forces is True
+            and self.direct_forces is True
+            and "forces" in self.output_targets
+        ):
             self.out_forces = PaiNNOutput(hidden_channels)
 
         self.inv_sqrt_2 = 1 / math.sqrt(2.0)
@@ -398,13 +406,16 @@ class PaiNN(BaseModel):
             vec = vec + dvec
             x = getattr(self, "upd_out_scalar_scale_%d" % i)(x)
 
+        outputs = {}
+        outputs["node_embedding"] = x
+
         #### Output block #####################################################
+        if "energy" in self.output_targets:
+            per_atom_energy = self.out_energy(x).squeeze(1)
+            energy = scatter(per_atom_energy, batch, dim=0)
+            outputs["energy"] = energy
 
-        per_atom_energy = self.out_energy(x).squeeze(1)
-        energy = scatter(per_atom_energy, batch, dim=0)
-        outputs = {"energy": energy}
-
-        if self.regress_forces:
+        if "forces" in self.output_targets and self.regress_forces:
             if self.direct_forces:
                 forces = self.out_forces(x, vec)
             else:
@@ -417,6 +428,7 @@ class PaiNN(BaseModel):
                         create_graph=True,
                     )[0]
                 )
+
             outputs["forces"] = forces
 
         return outputs

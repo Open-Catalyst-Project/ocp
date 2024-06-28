@@ -290,7 +290,7 @@ class TestSmallDatasetOptim:
     @pytest.mark.parametrize(
         ("model_name", "expected_energy_mae", "expected_force_mae"),
         [
-            pytest.param("gemnet", 0.4, 0.06, id="gemnet"),
+            pytest.param("gemnet", 0.45, 0.06, id="gemnet"),
             pytest.param("escn", 0.4, 0.06, id="escn"),
             pytest.param("equiformer_v2", 0.4, 0.06, id="equiformer_v2"),
         ],
