@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 from fairchem.core.common.utils import conditional_grad, scatter_det
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.models.gemnet_oc.gemnet_oc import GemNetOC
@@ -200,4 +200,4 @@ def embed(self, atoms):
     return out
 
 
-OCPCalculator.embed = embed
+FAIRChemCalculator.embed = embed

@@ -21,7 +21,7 @@ from ase.db import connect
 from yaml import dump
 
 import fairchem.core as om
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 
 
 def fairchem_root():
@@ -146,7 +146,7 @@ def generate_yml_config(checkpoint_path, yml="run.yml", delete=(), update=()):
     # see the output though, so I capture it.
 
     with contextlib.redirect_stdout(StringIO()) as _:
-        config = OCPCalculator(checkpoint_path=checkpoint_path).config
+        config = FAIRChemCalculator(checkpoint_path=checkpoint_path).config
 
     for key in delete:
         if key in config and len(key.split(".")) == 1:

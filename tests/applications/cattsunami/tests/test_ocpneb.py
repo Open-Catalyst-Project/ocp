@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from copy import deepcopy
 from fairchem.applications.cattsunami.core import OCPNEB
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator 
 from ase.optimize import BFGS
 from fairchem.core.models.model_registry import model_name_to_local_file
 
@@ -29,7 +29,7 @@ class TestNEB:
         )
 
         for image in images[1:-1]:
-            image.calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)
+            image.calc = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=True)
         unbatched = DyNEB(images, k=0.25)
 
         forces = batched.get_forces()
@@ -64,7 +64,7 @@ class TestNEB:
 
         images_ub = deepcopy(self.images)
         for image in images_ub[1:-1]:
-            image.calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)
+            image.calc = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=True)
         unbatched = DyNEB(images_ub, k=0.25)
         unbatched_opt = BFGS(unbatched, trajectory="unbatched.traj")
         unbatched_opt.run(fmax=0.05, steps=2)

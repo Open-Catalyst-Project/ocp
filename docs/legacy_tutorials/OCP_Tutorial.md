@@ -2036,7 +2036,7 @@ colab:
 id: o_MHpzbhPKN_
 outputId: fa4336cf-ba85-43b6-e608-551ffcf3763a
 ---
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 import ase.io
 from ase.optimize import BFGS
 from ase.build import fcc100, add_adsorbate, molecule
@@ -2057,7 +2057,7 @@ adslab.center(vacuum=13.0, axis=2)
 adslab.set_pbc(True)
 
 # Define the calculator
-calc = OCPCalculator(checkpoint_path=checkpoint_path)
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path)
 
 # Set up the calculator
 adslab.calc = calc

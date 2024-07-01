@@ -33,7 +33,7 @@ checkpoint_path
 4. Finally, use this checkpoint in an ASE calculator for a simple relaxation!
 
 ```{code-cell} ipython3
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 from ase.build import fcc111, add_adsorbate
 from ase.optimize import BFGS
 import matplotlib.pyplot as plt
@@ -44,7 +44,7 @@ slab = fcc111('Pt', size=(2, 2, 5), vacuum=10.0)
 add_adsorbate(slab, 'O', height=1.2, position='fcc')
 
 # Load the pre-trained checkpoint!
-calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=False)
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, cpu=False)
 slab.set_calculator(calc)
 
 # Run the optimization!

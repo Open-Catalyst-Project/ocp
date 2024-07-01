@@ -5,7 +5,7 @@ from fairchem.applications.cattsunami.core.autoframe import (
 )
 from fairchem.core.models.model_registry import model_name_to_local_file
 from fairchem.applications.cattsunami.core.reaction import Reaction
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator 
 from fairchem.data.oc.databases.pkls import ADSORBATE_PKL_PATH
 from fairchem.applications.cattsunami.databases import TRANSFER_REACTION_DB_PATH
 
@@ -44,7 +44,7 @@ class TestAutoframe:
         checkpoint_path = model_name_to_local_file(
             "EquiformerV2-31M-S2EF-OC20-All+MD", local_cache="/tmp/ocp_checkpoints/"
         )
-        calc1 = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)
+        calc1 = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=True)
         af = AutoFrameTransfer(
             reaction,
             reactant1_systems,

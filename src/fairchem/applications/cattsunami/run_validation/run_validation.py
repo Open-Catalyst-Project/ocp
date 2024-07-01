@@ -11,7 +11,7 @@ from ase.io import read
 from ase.optimize import BFGS
 import torch
 import argparse
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator 
 from fairchem.applications.cattsunami.core.ocpneb import OCPNEB
 import os
 import pandas as pd
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     delta_fmax_climb = float(args.delta_fmax_climb)
     k = float(args.k)
     fmax = float(args.fmax)
-    calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=args.cpu)
+    calc = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=args.cpu)
     model_id = checkpoint_path.split("/")[-1].split(".")[0]
     vasp_command = args.vasp_command
     os.makedirs(f"{args.output_file_path}/{model_id}", exist_ok=True)

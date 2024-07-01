@@ -1205,7 +1205,7 @@ def update_config(base_config):
         "format", config["task"].get("dataset", "lmdb")
     )
 
-    ### Read task based off config structure, similar to OCPCalculator.
+    ### Read task based off config structure, similar to FAIRChemCalculator .
     if config["task"]["dataset"] in [
         "trajectory_lmdb",
         "lmdb",

@@ -66,9 +66,9 @@ checkpoint_path = model_name_to_local_file('EquiformerV2-31M-S2EF-OC20-All+MD', 
 Next we load the checkpoint. The output is somewhat verbose, but it can be informative for debugging purposes.
 
 ```{code-cell}
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
-calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=False)
-# calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)
+from fairchem.core import FAIRChemCalculator
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, cpu=False)
+# calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, cpu=True)
 ```
 
 Next we can build a slab with an adsorbate on it. Here we use the ASE module to build a Pt slab. We use the experimental lattice constant that is the default. This can introduce some small errors with DFT since the lattice constant can differ by a few percent, and it is common to use DFT lattice constants. In this example, we do not constrain any layers.

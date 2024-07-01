@@ -15,7 +15,7 @@ import torch
 from ase.build import add_adsorbate, fcc111
 from ase.optimize import BFGS
 
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator 
 from fairchem.core.models.model_registry import model_name_to_local_file
 
 if TYPE_CHECKING:
@@ -51,14 +51,14 @@ def checkpoint_path(request, tmp_path):
 # First let's just make sure all checkpoints are being loaded without any
 # errors as part of the ASE calculator setup.
 def test_calculator_setup(checkpoint_path):
-    _ = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)
+    _ = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=True)
 
 
 # test relaxation with EqV2
 def test_relaxation_final_energy(atoms, tmp_path, snapshot) -> None:
     random.seed(1)
     torch.manual_seed(1)
-    calc = OCPCalculator(
+    calc = FAIRChemCalculator (
         checkpoint_path=model_name_to_local_file(
             "EquiformerV2-153M-S2EF-OC20-All+MD", tmp_path
         ),
@@ -84,7 +84,7 @@ def test_random_seed_final_energy(atoms, tmp_path):
     )
 
     for seed in seeds:
-        calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True, seed=seed)
+        calc = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=True, seed=seed)
 
         atoms.set_calculator(calc)
 

@@ -74,8 +74,8 @@ atoms, c['data']['total_energy'], c['data']['forces']
 Next, we will create an OCP calculator that we can use to get predictions from.
 
 ```{code-cell} ipython3
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
-calc = OCPCalculator(checkpoint_path=checkpoint_path, trainer='forces', cpu=False)
+from fairchem.core import FAIRChemCalculator
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, trainer='forces', cpu=False)
 ```
 
 Now, we loop through each structure and accumulate the OCP predictions. Then, we plot the parity results.
@@ -282,7 +282,7 @@ The `best_checkpoint.pt` is the one that performs best on the validation dataset
 
 ```{code-cell} ipython3
 newckpt = cpdir + '/checkpoint.pt'
-newcalc = OCPCalculator(checkpoint_path=newckpt, cpu=False)
+newcalc = FAIRChemCalculator(checkpoint_path=newckpt, cpu=False)
 ```
 
 ```{code-cell} ipython3

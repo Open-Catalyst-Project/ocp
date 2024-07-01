@@ -66,7 +66,7 @@ def batch_to_atoms(batch):
     return atoms_objects
 
 
-class OCPCalculator(Calculator):
+class FAIRChemCalculator (Calculator):
     implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
 
     def __init__(
@@ -197,7 +197,7 @@ class OCPCalculator(Calculator):
         seed = seed if seed is not None else self.trainer.config["cmd"]["seed"]
         if seed is None:
             logging.warning(
-                "No seed has been set in modelcheckpoint or OCPCalculator! Results may not be reproducible on re-run"
+                "No seed has been set in modelcheckpoint or FAIRChemCalculator ! Results may not be reproducible on re-run"
             )
         else:
             self.trainer.set_seed(seed)

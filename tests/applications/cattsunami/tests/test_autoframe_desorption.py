@@ -3,7 +3,7 @@ from fairchem.applications.cattsunami.core.autoframe import (
     interpolate_and_correct_frames,
 )
 from fairchem.applications.cattsunami.core import Reaction
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator 
 from fairchem.core.models.model_registry import model_name_to_local_file
 import numpy as np
 import pytest
@@ -28,7 +28,7 @@ class TestAutoframe:
             "EquiformerV2-31M-S2EF-OC20-All+MD",
             local_cache=tmp_path / "ocp_checkpoints",
         )
-        calc1 = OCPCalculator(checkpoint_path=checkpoint_path, cpu=False)
+        calc1 = FAIRChemCalculator (checkpoint_path=checkpoint_path, cpu=False)
         af = AutoFrameDesorption(reaction, reactant_systems, reactant_energies, 3)
         neb_frames_sets = af.get_neb_frames(
             calc1,

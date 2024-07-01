@@ -20,7 +20,7 @@ In the previous example, we constructed slab models of adsorbates on desired sit
 
 
 ```{code-cell} ipython3
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 import ase.io
 from ase.optimize import BFGS
 import sys
@@ -126,8 +126,8 @@ Running the model with BFGS prints at each relaxation step which is a lot to pri
 os.makedirs(f"data/{bulk_src_id}_{adsorbate_smiles_h}", exist_ok=True)
 
 # Define the calculator
-calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=False)   # if you have a GPU
-# calc = OCPCalculator(checkpoint_path=checkpoint_path, cpu=True)  # If you have CPU only
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, cpu=False)   # if you have a GPU
+# calc = FAIRChemCalculator(checkpoint_path=checkpoint_path, cpu=True)  # If you have CPU only
 ```
 
 Now we setup and run the relaxation.

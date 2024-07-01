@@ -22,7 +22,7 @@ We used them to search for similar atomic structures.
 
 We can use them for diagnostic purposes, or clustering.
 
-In this example, we patch the GemNetOC model to save the embeddings so you can easily access them. This requires two changes. The first is in the GemNetOC model where the embeddings are saved, and the second is in the OCPCalculator to retrieve them.
+In this example, we patch the GemNetOC model to save the embeddings so you can easily access them. This requires two changes. The first is in the GemNetOC model where the embeddings are saved, and the second is in the FAIRChemCalculator to retrieve them.
 
 We provide 5 different kinds of embeddings:
 
@@ -54,13 +54,13 @@ import numpy as np
 
 ```{code-cell} ipython3
 %%capture
-from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 from fairchem.core.models.model_registry import model_name_to_local_file
 
 import os
 checkpoint_path = model_name_to_local_file('GemNet-OC-S2EFS-OC20+OC22', local_cache='/tmp/ocp_checkpoints/')
 
-calc = OCPCalculator(checkpoint_path=checkpoint_path)
+calc = FAIRChemCalculator(checkpoint_path=checkpoint_path)
 ```
 
 ## Bulk Cu equation of state example

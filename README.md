@@ -36,19 +36,19 @@ pip install -e packages/fairchem-{fairchem-package-name}
 - [Installation Guide](https://fair-chem.github.io/core/install.html)
 
 ### Quick Start
-Pretrained models can be used directly with ASE through our `OCPCalculator` interface:
+Pretrained models can be used directly with ASE through our `FAIRChemCalculator` interface:
 
 ```python
 from ase.build import fcc100, add_adsorbate, molecule
 from ase.optimize import LBFGS
-from fairchem.core import OCPCalculator
+from fairchem.core import FAIRChemCalculator
 
 # Set up your system as an ASE atoms object
 slab = fcc100('Cu', (3, 3, 3), vacuum=8)
 adsorbate = molecule("CO")
 add_adsorbate(slab, adsorbate, 2.0, 'bridge')
 
-calc = OCPCalculator(
+calc = FAIRChemCalculator(
     model_name="EquiformerV2-31M-S2EF-OC20-All+MD",
     local_cache="pretrained_models",
     cpu=False,
