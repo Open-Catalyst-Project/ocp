@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import ClassVar
+from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 import torch
 from ase import Atoms
 from ase.calculators.calculator import Calculator
-from ase.calculators.singlepoint import SinglePointCalculator as sp
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.constraints import FixAtoms
 
 from fairchem.core.common.registry import registry
@@ -33,17 +34,51 @@ from fairchem.core.datasets import data_list_collater
 from fairchem.core.models.model_registry import model_name_to_local_file
 from fairchem.core.preprocessing import AtomsToGraphs
 
+if TYPE_CHECKING:
+    from torch_geometric.data import Batch
 
-def batch_to_atoms(batch):
+
+# system level model predictions have different shapes than expected by ASE
+ASE_PROP_RESHAPE = MappingProxyType(
+    {"stress": (-1, 3, 3), "dielectric_tensor": (-1, 3, 3)}
+)
+
+
+def batch_to_atoms(
+    batch: Batch, results: dict[str, torch.Tensor] | None = None
+) -> list[Atoms]:
+    """Convert a data batch to ase Atoms
+
+    Args:
+        batch: data batch
+        results: dictionary with predicted result tensors. If no results are given,
+            energy and forces are assumed to be included in the batch
+
+    Returns:
+        list of Atoms
+    """
     n_systems = batch.natoms.shape[0]
     natoms = batch.natoms.tolist()
     numbers = torch.split(batch.atomic_numbers, natoms)
-    fixed = torch.split(batch.fixed, natoms)
-    forces = torch.split(batch.force, natoms)
+    fixed = torch.split(batch.fixed.to(torch.bool), natoms)
+    if results is not None:
+        results = {
+            key: val.view(ASE_PROP_RESHAPE.get(key, -1)).tolist()
+            if len(val) == len(batch)
+            else [v.cpu().detach().numpy() for v in torch.split(val, natoms)]
+            for key, val in results.items()
+        }
+    else:
+        results = {
+            "energy": batch.energy.view(-1).tolist(),
+            "forces": [
+                v.cpu().detach().numpy() for v in torch.split(batch.forces, natoms)
+            ],
+        }
+
     positions = torch.split(batch.pos, natoms)
     tags = torch.split(batch.tags, natoms)
     cells = batch.cell
-    energies = batch.y.view(-1).tolist()
 
     atoms_objects = []
     for idx in range(n_systems):
@@ -55,10 +90,8 @@ def batch_to_atoms(batch):
             constraint=FixAtoms(mask=fixed[idx].tolist()),
             pbc=[True, True, True],
         )
-        calc = sp(
-            atoms=atoms,
-            energy=energies[idx],
-            forces=forces[idx].cpu().detach().numpy(),
+        calc = SinglePointCalculator(
+            atoms=atoms, **{key: val[idx] for key, val in results.items()}
         )
         atoms.set_calculator(calc)
         atoms_objects.append(atoms)
@@ -67,7 +100,9 @@ def batch_to_atoms(batch):
 
 
 class OCPCalculator(Calculator):
-    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+    """ASE based calculator using an OCP model"""
+
+    _reshaped_props = ASE_PROP_RESHAPE
 
     def __init__(
         self,
@@ -76,8 +111,6 @@ class OCPCalculator(Calculator):
         model_name: str | None = None,
         local_cache: str | None = None,
         trainer: str | None = None,
-        cutoff: int = 6,
-        max_neighbors: int = 50,
         cpu: bool = True,
         seed: int | None = None,
     ) -> None:
@@ -96,16 +129,12 @@ class OCPCalculator(Calculator):
                 Directory to save pretrained model checkpoints.
             trainer (str):
                 OCP trainer to be used. "forces" for S2EF, "energy" for IS2RE.
-            cutoff (int):
-                Cutoff radius to be used for data preprocessing.
-            max_neighbors (int):
-                Maximum amount of neighbors to store for a given atom.
             cpu (bool):
                 Whether to load and run the model on CPU. Set `False` for GPU.
         """
         setup_imports()
         setup_logging()
-        Calculator.__init__(self)
+        super().__init__()
 
         if model_name is not None:
             if checkpoint_path is not None:
@@ -170,7 +199,6 @@ class OCPCalculator(Calculator):
         ### backwards compatability with OCP v<2.0
         config = update_config(config)
 
-        # Save config so obj can be transported over network (pkl)
         self.config = copy.deepcopy(config)
         self.config["checkpoint"] = checkpoint_path
         del config["dataset"]["src"]
@@ -203,14 +231,12 @@ class OCPCalculator(Calculator):
             self.trainer.set_seed(seed)
 
         self.a2g = AtomsToGraphs(
-            max_neigh=max_neighbors,
-            radius=cutoff,
             r_energy=False,
             r_forces=False,
             r_distances=False,
-            r_edges=False,
             r_pbc=True,
         )
+        self.implemented_properties = list(self.config["outputs"].keys())
 
     def load_checkpoint(
         self, checkpoint_path: str, checkpoint: dict | None = None
@@ -221,20 +247,28 @@ class OCPCalculator(Calculator):
         Args:
             checkpoint_path: string
                 Path to trained model
+            checkpoint: dict
+                A pretrained checkpoint dict
         """
         try:
             self.trainer.load_checkpoint(checkpoint_path, checkpoint)
         except NotImplementedError:
             logging.warning("Unable to load checkpoint!")
 
-    def calculate(self, atoms: Atoms, properties, system_changes) -> None:
-        Calculator.calculate(self, atoms, properties, system_changes)
-        data_object = self.a2g.convert(atoms)
-        batch = data_list_collater([data_object], otf_graph=True)
+    def calculate(self, atoms: Atoms | Batch, properties, system_changes) -> None:
+        """Calculate implemented properties for a single Atoms object or a Batch of them."""
+        super().calculate(atoms, properties, system_changes)
+        if isinstance(atoms, Atoms):
+            data_object = self.a2g.convert(atoms)
+            batch = data_list_collater([data_object], otf_graph=True)
+        else:
+            batch = atoms
 
         predictions = self.trainer.predict(batch, per_image=False, disable_tqdm=True)
 
         for key in predictions:
             _pred = predictions[key]
             _pred = _pred.item() if _pred.numel() == 1 else _pred.cpu().numpy()
+            if key in OCPCalculator._reshaped_props:
+                _pred = _pred.reshape(OCPCalculator._reshaped_props.get(key)).squeeze()
             self.results[key] = _pred

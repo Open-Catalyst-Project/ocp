@@ -17,7 +17,8 @@ from torch_geometric.data import Batch
 from fairchem.core.common.typing import assert_is_instance
 from fairchem.core.datasets.lmdb_dataset import data_list_collater
 
-from .optimizers.lbfgs_torch import LBFGS, TorchCalc
+from .optimizers.lbfgs_torch import LBFGS
+from .optimizers.optimizable import OptimizableBatch, OptimizableUnitCellBatch
 
 
 def ml_relax(
@@ -25,40 +26,65 @@ def ml_relax(
     model,
     steps: int,
     fmax: float,
-    relax_opt,
-    save_full_traj,
+    relax_opt: dict[str],
+    relax_cell: bool = False,
+    relax_volume: bool = False,
+    save_full_traj: bool = True,
     device: str = "cuda:0",
-    transform=None,
-    early_stop_batch: bool = False,
+    transform: torch.nn.Module | None = None,
+    mask_converged: bool = True,
+    cumulative_mask: bool = True,
 ):
-    """
-    Runs ML-based relaxations.
+    """Runs ML-based relaxations.
+
     Args:
-        batch: object
-        model: object
-        steps: int
-            Max number of steps in the structure relaxation.
-        fmax: float
-            Structure relaxation terminates when the max force
-            of the system is no bigger than fmax.
-        relax_opt: str
-            Optimizer and corresponding parameters to be used for structure relaxations.
-        save_full_traj: bool
-            Whether to save out the full ASE trajectory. If False, only save out initial and final frames.
+        batch: a data batch object.
+        model: a trainer object with model.q
+        steps: Max number of steps in the structure relaxation.
+        fmax: Structure relaxation terminates when the max force of the system is no bigger than fmax.
+        relax_opt: Optimizer and corresponding parameters to be used for structure relaxations.
+        relax_cell: if true will use stress predictions to relax crystallographic cell.
+            The model given must predict stress
+        relax_volume: if true will relax the cell isotropically. the given model must predict stress.
+        save_full_traj: Whether to save out the full ASE trajectory. If False, only save out initial and final frames.
+        mask_converged: whether to mask batches where all atoms are below convergence threshold
+        cumulative_mask: if true, once system is masked then it remains masked even if new predictions give forces
+                above threshold, ie. once masked always masked. Note if this is used make sure to check convergence with
+                the same fmax always
     """
+    # if not pbc is set, ignore it when comparing batches
+    if not hasattr(batch, "pbc"):
+        OptimizableBatch.ignored_changes = {"pbc"}
+
     batches = deque([batch])
     relaxed_batches = []
     while batches:
         batch = batches.popleft()
         oom = False
         ids = batch.sid
-        calc = TorchCalc(model, transform)
+
+        if relax_cell or relax_volume:
+            optimizable = OptimizableUnitCellBatch(
+                batch,
+                trainer=model,
+                transform=transform,
+                mask_converged=mask_converged,
+                cumulative_mask=cumulative_mask,
+                hydrostatic_strain=relax_volume,
+            )
+        else:
+            optimizable = OptimizableBatch(
+                batch,
+                trainer=model,
+                transform=transform,
+                mask_converged=mask_converged,
+                cumulative_mask=cumulative_mask,
+            )
 
         # Run ML-based relaxation
-        traj_dir = relax_opt.get("traj_dir", None)
+        traj_dir = relax_opt.get("traj_dir")
         optimizer = LBFGS(
-            batch,
-            calc,
+            optimizable_batch=optimizable,
             maxstep=relax_opt.get("maxstep", 0.2),
             memory=relax_opt["memory"],
             damping=relax_opt.get("damping", 1.2),
@@ -67,13 +93,12 @@ def ml_relax(
             save_full_traj=save_full_traj,
             traj_dir=Path(traj_dir) if traj_dir is not None else None,
             traj_names=ids,
-            early_stop_batch=early_stop_batch,
         )
 
         e: RuntimeError | None = None
         try:
-            relaxed_batch = optimizer.run(fmax=fmax, steps=steps)
-            relaxed_batches.append(relaxed_batch)
+            optimizer.run(fmax=fmax, steps=steps)
+            relaxed_batches.append(batch)
         except RuntimeError as err:
             e = err
             oom = True
@@ -90,5 +115,8 @@ def ml_relax(
             mid = len(data_list) // 2
             batches.appendleft(data_list_collater(data_list[:mid]))
             batches.appendleft(data_list_collater(data_list[mid:]))
+
+    # reset for good measure
+    OptimizableBatch.ignored_changes = {}
 
     return Batch.from_data_list(relaxed_batches)

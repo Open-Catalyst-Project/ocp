@@ -65,6 +65,9 @@ def test_relaxation_final_energy(atoms, tmp_path, snapshot) -> None:
         cpu=True,
     )
 
+    assert "energy" in calc.implemented_properties
+    assert "forces" in calc.implemented_properties
+
     atoms.set_calculator(calc)
     opt = BFGS(atoms)
     opt.run(fmax=0.05, steps=100)

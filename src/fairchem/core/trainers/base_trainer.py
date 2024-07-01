@@ -339,7 +339,8 @@ class BaseTrainer(ABC):
 
         # load relaxation dataset
         if "relax_dataset" in self.config["task"]:
-            self.relax_dataset = registry.get_dataset_class("lmdb")(
+            format = self.config["task"]["relax_dataset"].get("format", "lmdb")
+            self.relax_dataset = registry.get_dataset_class(format)(
                 self.config["task"]["relax_dataset"]
             )
             self.relax_sampler = self.get_sampler(
@@ -686,7 +687,7 @@ class BaseTrainer(ABC):
                     disable_tqdm=disable_eval_tqdm,
                 )
 
-    @torch.no_grad()
+    @torch.no_grad
     def validate(self, split: str = "val", disable_tqdm: bool = False):
         ensure_fitted(self._unwrapped_model, warn=True)
 
