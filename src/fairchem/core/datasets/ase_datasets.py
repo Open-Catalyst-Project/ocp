@@ -13,7 +13,7 @@ import logging
 import os
 import warnings
 from abc import ABC, abstractmethod
-from functools import cache, reduce
+from functools import cache
 from glob import glob
 from pathlib import Path
 from typing import Any, Callable
@@ -469,13 +469,14 @@ class AseDBDataset(AseAtomsDataset):
 
     def _load_dataset_get_ids(self, config: dict) -> list[int]:
         if isinstance(config["src"], list):
-            if os.path.isdir(config["src"][0]):
-                filepaths = reduce(
-                    lambda x, y: x + y,
-                    (glob(f"{path}/*") for path in config["src"]),
-                )
-            else:
-                filepaths = config["src"]
+            filepaths = []
+            for path in config["src"]:
+                if os.path.isdir(path):
+                    filepaths.extend(glob(f"{path}/*"))
+                elif os.path.isfile(path):
+                    filepaths.append(path)
+                else:
+                    raise RuntimeError(f"Error reading dataset in {path}!")
         elif os.path.isfile(config["src"]):
             filepaths = [config["src"]]
         elif os.path.isdir(config["src"]):

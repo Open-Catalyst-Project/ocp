@@ -38,10 +38,14 @@ from fairchem.core.common.utils import (
     save_checkpoint,
     update_config,
 )
+from fairchem.core.modules.element_references import (
+    create_element_references,
+    fit_linear_references,
+)
 from fairchem.core.modules.evaluator import Evaluator
 from fairchem.core.modules.exponential_moving_average import ExponentialMovingAverage
 from fairchem.core.modules.loss import DDPLoss
-from fairchem.core.modules.normalizer import Normalizer
+from fairchem.core.modules.normalizer import create_normalizer, fit_normalizers
 from fairchem.core.modules.scaling.compat import load_scales_compat
 from fairchem.core.modules.scaling.util import ensure_fitted
 from fairchem.core.modules.scheduler import LRScheduler
@@ -355,15 +359,122 @@ class BaseTrainer(ABC):
             )
 
     def load_task(self):
-        # Normalizer for the dataset.
-        normalizer = self.config["dataset"].get("transforms", {}).get("normalizer", {})
-        self.normalizers = {}
-        if normalizer:
-            for target in normalizer:
-                self.normalizers[target] = Normalizer(
-                    mean=normalizer[target].get("mean", 0),
-                    std=normalizer[target].get("stdev", 1),
+        # load or fit element references for dataset
+        elementrefs = (
+            self.config["dataset"].get("transforms", {}).get("element_references", {})
+        )
+        self.elementrefs = {}
+        for target in elementrefs:
+            if target == "fit" and not elementrefs["fit"].get("fitted", False):
+                otf_elementrefs = [
+                    {target: None for target in elementrefs["fit"]["targets"]}
+                ]
+                # only carry out the fit on master and then broadcast
+                if distutils.is_master():
+                    otf_elementrefs = [
+                        fit_linear_references(
+                            targets=elementrefs["fit"]["targets"],
+                            dataset=self.train_dataset,
+                            batch_size=elementrefs["fit"].get(
+                                "batch_size", self.config["optim"]["batch_size"]
+                            ),
+                            num_batches=elementrefs["fit"].get("num_batches"),
+                            num_workers=self.config["optim"]["num_workers"],
+                            max_num_elements=elementrefs["fit"].get(
+                                "max_num_elements", 118
+                            ),
+                            driver=elementrefs["fit"].get("driver", None),
+                        )
+                    ]
+                    # save the linear references for possible subsequent use
+                    if not self.is_debug:
+                        for lr_target, references in otf_elementrefs[0].items():
+                            path = save_checkpoint(
+                                references.state_dict(),
+                                self.config["cmd"]["checkpoint_dir"],
+                                f"{target}_linref.pt",
+                            )
+                            logging.info(
+                                f"{lr_target} linear references have been saved to: {path}"
+                            )
+
+                distutils.broadcast_object_list(otf_elementrefs, src=0)
+                # make sure all of the element reference modules are on the same device
+                self.elementrefs.update(otf_elementrefs[0])
+                # set config so that references are not refit
+                self.config["dataset"]["transforms"]["element_references"]["fit"][
+                    "fitted"
+                ] = True
+            else:  # load pre-fitted linear references from file
+                self.elementrefs[target] = create_element_references(
+                    file=elementrefs[target].get("file"),
                 )
+
+        # load or fit normalizers for the dataset.
+        normalizers = self.config["dataset"].get("transforms", {}).get("normalizer", {})
+        self.normalizers = {}
+        for target in normalizers:
+            if target == "fit" and not normalizers["fit"].get("fitted", False):
+                otf_normalizers = [
+                    {target: None for target in normalizers["fit"]["targets"]}
+                ]
+                # only carry out the fit on master and then broadcast
+                if distutils.is_master():
+                    otf_normalizers = [
+                        fit_normalizers(
+                            targets=normalizers["fit"]["targets"],
+                            element_references=self.elementrefs,
+                            dataset=self.train_dataset,
+                            batch_size=normalizers["fit"].get(
+                                "batch_size", self.config["optim"]["batch_size"]
+                            ),
+                            num_batches=normalizers["fit"].get("num_batches"),
+                            num_workers=self.config["optim"]["num_workers"],
+                        )
+                    ]
+                    # save the normalization for possible subsequent use
+                    if not self.is_debug:
+                        save_checkpoint(
+                            otf_normalizers[0],
+                            self.config["cmd"]["checkpoint_dir"],
+                            "normalizers.pt",
+                        )
+                        logging.info(
+                            f"Normalizers for targets {normalizers['fit']['targets']} have been saved to: {path}"
+                        )
+
+                distutils.broadcast_object_list(otf_normalizers, src=0)
+                self.normalizers.update(otf_normalizers[0])
+                # set config so that normalizers are not refit
+                self.config["dataset"]["transforms"]["normalizer"]["fit"]["fitted"] = (
+                    True
+                )
+            elif target == "file":
+                norms = torch.load(normalizers["file"])
+                self.normalizers.update(norms)
+                logging.info(
+                    f"Loaded normalizers for the following targets: {list(norms.keys())}"
+                )
+            else:
+                self.normalizers[target] = create_normalizer(
+                    file=normalizers[target].get("file"),
+                    mean=normalizers[target].get("mean"),
+                    std=normalizers[target].get("stdev"),
+                )
+
+        # make sure element refs and normalizers are on this device
+        self.elementrefs.update(
+            {
+                target: elementref.to(self.device)
+                for target, elementref in self.elementrefs.items()
+            }
+        )
+        self.normalizers.update(
+            {
+                target: normalizer.to(self.device)
+                for target, normalizer in self.normalizers.items()
+            }
+        )
 
         self.output_targets = {}
         for target_name in self.config["outputs"]:
@@ -610,30 +721,37 @@ class BaseTrainer(ABC):
         training_state: bool = True,
     ) -> str | None:
         if not self.is_debug and distutils.is_master():
+            state = {
+                "state_dict": self.model.state_dict(),
+                "normalizers": {
+                    key: value.state_dict() for key, value in self.normalizers.items()
+                },
+                "elementrefs": {
+                    key: value.state_dict() for key, value in self.elementrefs.items()
+                },
+                "config": self.config,
+                "val_metrics": metrics,
+                "amp": self.scaler.state_dict() if self.scaler else None,
+            }
             if training_state:
-                return save_checkpoint(
+                state.update(
                     {
                         "epoch": self.epoch,
                         "step": self.step,
-                        "state_dict": self.model.state_dict(),
                         "optimizer": self.optimizer.state_dict(),
                         "scheduler": self.scheduler.scheduler.state_dict()
                         if self.scheduler.scheduler_type != "Null"
                         else None,
-                        "normalizers": {
-                            key: value.state_dict()
-                            for key, value in self.normalizers.items()
-                        },
-                        "config": self.config,
-                        "val_metrics": metrics,
                         "ema": self.ema.state_dict() if self.ema else None,
-                        "amp": self.scaler.state_dict() if self.scaler else None,
                         "best_val_metric": self.best_val_metric,
                         "primary_metric": self.evaluation_metrics.get(
                             "primary_metric",
                             self.evaluator.task_primary_metric[self.name],
                         ),
                     },
+                )
+                ckpt_path = save_checkpoint(
+                    state,
                     checkpoint_dir=self.config["cmd"]["checkpoint_dir"],
                     checkpoint_file=checkpoint_file,
                 )
@@ -642,22 +760,13 @@ class BaseTrainer(ABC):
                     self.ema.store()
                     self.ema.copy_to()
                 ckpt_path = save_checkpoint(
-                    {
-                        "state_dict": self.model.state_dict(),
-                        "normalizers": {
-                            key: value.state_dict()
-                            for key, value in self.normalizers.items()
-                        },
-                        "config": self.config,
-                        "val_metrics": metrics,
-                        "amp": self.scaler.state_dict() if self.scaler else None,
-                    },
+                    state,
                     checkpoint_dir=self.config["cmd"]["checkpoint_dir"],
                     checkpoint_file=checkpoint_file,
                 )
                 if self.ema:
                     self.ema.restore()
-                return ckpt_path
+            return ckpt_path
         return None
 
     def update_best(

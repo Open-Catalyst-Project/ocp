@@ -19,10 +19,12 @@ class DataTransforms:
             return data_object
 
         for transform_fn in self.config:
-            # TODO: Normalization information used in the trainers. Ignore here
-            # for now.
-            if transform_fn == "normalizer":
+            # TODO: Normalization information used in the trainers. Ignore here for now
+            # TODO: if we dont use them here, these should not be defined as "transforms" in the config
+            # TODO: add them as another entry under dataset, maybe "standardize"?
+            if transform_fn in ("normalizer", "element_references"):
                 continue
+
             data_object = eval(transform_fn)(data_object, self.config[transform_fn])
 
         return data_object
