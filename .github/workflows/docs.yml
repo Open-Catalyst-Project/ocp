@@ -3,6 +3,9 @@ name: documentation
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 # This job installs dependencies, build the book, and pushes it to `gh-pages`
 jobs:

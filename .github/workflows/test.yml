@@ -2,9 +2,11 @@ name: tests
 
 on:
   workflow_call:
+  workflow_dispatch:
   pull_request:
     branches: [main]
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   test:
