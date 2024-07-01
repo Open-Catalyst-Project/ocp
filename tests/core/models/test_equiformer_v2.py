@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+import copy
 import io
 import os
 
@@ -14,8 +15,10 @@ import pytest
 import requests
 import torch
 from ase.io import read
+from torch.nn.parallel.distributed import DistributedDataParallel
 
 from fairchem.core.common.registry import registry
+from fairchem.core.common.test_utils import PGConfig, spawn_multi_process
 from fairchem.core.common.utils import load_state_dict, setup_imports
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.models.equiformer_v2.so3 import (
@@ -42,8 +45,7 @@ def load_data(request):
     request.cls.data = data_list[0]
 
 
-@pytest.fixture(scope="class")
-def load_model(request):
+def _load_model():
     torch.manual_seed(4)
     setup_imports()
 
@@ -100,7 +102,20 @@ def load_model(request):
     # so we explicitly set the number of layers to 1 (instead of all 8).
     # The other alternative is to have different snapshots for mac vs. linux.
     model.num_layers = 1
-    request.cls.model = model
+    return model
+
+
+@pytest.fixture(scope="class")
+def load_model(request):
+    request.cls.model = _load_model()
+
+
+def _runner(data):
+    # serializing the model through python multiprocess results in precision errors, so we get a fresh model here
+    model = _load_model()
+    ddp_model = DistributedDataParallel(model)
+    outputs = ddp_model(data_list_collater([data]))
+    return {k: v.detach() for k, v in outputs.items()}
 
 
 @pytest.mark.usefixtures("load_data")
@@ -109,14 +124,38 @@ class TestEquiformerV2:
     def test_energy_force_shape(self, snapshot):
         # Recreate the Data object to only keep the necessary features.
         data = self.data
+        model = copy.deepcopy(self.model)
 
         # Pass it through the model.
-        outputs = self.model(data_list_collater([data]))
+        outputs = model(data_list_collater([data]))
+        print(outputs)
         energy, forces = outputs["energy"], outputs["forces"]
 
         assert snapshot == energy.shape
         assert snapshot == pytest.approx(energy.detach())
 
+        assert snapshot == forces.shape
+        assert snapshot == pytest.approx(forces.detach().mean(0))
+
+    def test_ddp(self, snapshot):
+        data_dist = self.data.clone().detach()
+        config = PGConfig(backend="gloo", world_size=1, gp_group_size=1, use_gp=False)
+        output = spawn_multi_process(config, _runner, data_dist)
+        assert len(output) == 1
+        energy, forces = output[0]["energy"], output[0]["forces"]
+        assert snapshot == energy.shape
+        assert snapshot == pytest.approx(energy.detach())
+        assert snapshot == forces.shape
+        assert snapshot == pytest.approx(forces.detach().mean(0))
+
+    def test_gp(self, snapshot):
+        data_dist = self.data.clone().detach()
+        config = PGConfig(backend="gloo", world_size=2, gp_group_size=2, use_gp=True)
+        output = spawn_multi_process(config, _runner, data_dist)
+        assert len(output) == 2
+        energy, forces = output[0]["energy"], output[0]["forces"]
+        assert snapshot == energy.shape
+        assert snapshot == pytest.approx(energy.detach())
         assert snapshot == forces.shape
         assert snapshot == pytest.approx(forces.detach().mean(0))
 
@@ -186,3 +225,4 @@ class TestMPrimaryLPrimary:
                 embedding._l_primary(c)
                 lp = embedding.embedding.clone()
                 (test_matrix_lp == lp).all()
+

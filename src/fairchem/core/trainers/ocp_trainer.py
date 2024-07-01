@@ -90,6 +90,7 @@ class OCPTrainer(BaseTrainer):
         slurm=None,
         noddp=False,
         name="ocp",
+        gp_gpus=None,
     ):
         if slurm is None:
             slurm = {}
@@ -114,6 +115,7 @@ class OCPTrainer(BaseTrainer):
             slurm=slurm,
             noddp=noddp,
             name=name,
+            gp_gpus=gp_gpus,
         )
 
     def train(self, disable_eval_tqdm: bool = False) -> None:

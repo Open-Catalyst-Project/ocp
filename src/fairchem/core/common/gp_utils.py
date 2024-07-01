@@ -8,9 +8,9 @@ LICENSE file in the root directory of this source tree.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 
+import numpy as np
 import torch
 from torch import distributed as dist
 
@@ -143,8 +143,10 @@ def _split_tensor(
     dim: int = -1,
     contiguous_chunks: bool = False,
 ):
-    part_size = math.ceil(tensor.size(dim) / num_parts)
-    tensor_list = torch.split(tensor, part_size, dim=dim)
+    part_sizes = [
+        len(part) for part in np.array_split(np.zeros(tensor.size(dim)), num_parts)
+    ]
+    tensor_list = torch.split(tensor, part_sizes, dim=dim)
     if contiguous_chunks:
         return tuple(chunk.contiguous() for chunk in tensor_list)
     return tensor_list
@@ -272,20 +274,24 @@ class GatherFromModelParallelRegion(torch.autograd.Function):
 
 
 def copy_to_model_parallel_region(input: torch.Tensor) -> torch.Tensor:
+    assert initialized(), "Cannot use graph parallel with initializing gp group, must call setup_gp from gp_utils.py!"
     return CopyToModelParallelRegion.apply(input)
 
 
 def reduce_from_model_parallel_region(input: torch.Tensor) -> torch.Tensor:
+    assert initialized(), "Cannot use graph parallel with initializing gp group, must call setup_gp from gp_utils.py!"
     return ReduceFromModelParallelRegion.apply(input)
 
 
 def scatter_to_model_parallel_region(
     input: torch.Tensor, dim: int = -1
 ) -> torch.Tensor:
+    assert initialized(), "Cannot use graph parallel with initializing gp group, must call setup_gp from gp_utils.py!"
     return ScatterToModelParallelRegion.apply(input, dim)
 
 
 def gather_from_model_parallel_region(
     input: torch.Tensor, dim: int = -1
 ) -> torch.Tensor:
+    assert initialized(), "Cannot use graph parallel with initializing gp group, must call setup_gp from gp_utils.py!"
     return GatherFromModelParallelRegion.apply(input, dim)

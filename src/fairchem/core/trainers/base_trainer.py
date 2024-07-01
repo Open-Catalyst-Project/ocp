@@ -74,6 +74,7 @@ class BaseTrainer(ABC):
         name: str = "ocp",
         slurm=None,
         noddp: bool = False,
+        gp_gpus: int | None = None,
     ) -> None:
         if slurm is None:
             slurm = {}
@@ -131,6 +132,7 @@ class BaseTrainer(ABC):
             },
             "slurm": slurm,
             "noddp": noddp,
+            "gp_gpus": gp_gpus,
         }
         # AMP Scaler
         self.scaler = torch.cuda.amp.GradScaler() if amp and not self.cpu else None

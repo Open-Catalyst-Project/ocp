@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch_geometric
 
+from fairchem.core.common import gp_utils
+
 from .activation import (
     GateActivation,
     S2Activation,
@@ -229,6 +231,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         atomic_numbers,
         edge_distance: torch.Tensor,
         edge_index,
+        node_offset: int = 0,
     ):
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
@@ -245,6 +248,10 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
 
         x_source = x.clone()
         x_target = x.clone()
+        if gp_utils.initialized():
+            x_full = gp_utils.gather_from_model_parallel_region(x.embedding, dim=0)
+            x_source.set_embedding(x_full)
+            x_target.set_embedding(x_full)
         x_source._expand_edge(edge_index[0, :])
         x_target._expand_edge(edge_index[1, :])
 
@@ -349,7 +356,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
         # Compute the sum of the incoming neighboring messages for each target node
-        x_message._reduce_edge(edge_index[1], len(x.embedding))
+        x_message._reduce_edge(edge_index[1] - node_offset, len(x.embedding))
 
         # Project
         return self.proj(x_message)
@@ -643,13 +650,14 @@ class TransBlockV2(torch.nn.Module):
         edge_distance,
         edge_index,
         batch,  # for GraphDropPath
+        node_offset: int = 0,
     ):
         output_embedding = x
 
         x_res = output_embedding.embedding
         output_embedding.embedding = self.norm_1(output_embedding.embedding)
         output_embedding = self.ga(
-            output_embedding, atomic_numbers, edge_distance, edge_index
+            output_embedding, atomic_numbers, edge_distance, edge_index, node_offset
         )
 
         if self.drop_path is not None:
