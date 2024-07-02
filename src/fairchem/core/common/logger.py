@@ -27,7 +27,7 @@ class Logger(ABC):
         self.config = config
 
     @abstractmethod
-    def watch(self, model):
+    def watch(self, model, log_freq: int = 1000):
         """
         Monitor parameters and gradients.
         """
@@ -82,8 +82,8 @@ class WandBLogger(Logger):
             resume="allow",
         )
 
-    def watch(self, model) -> None:
-        wandb.watch(model)
+    def watch(self, model, log_freq: int = 1000) -> None:
+        wandb.watch(model, log_freq = log_freq)
 
     def log(self, update_dict, step: int, split: str = "") -> None:
         update_dict = super().log(update_dict, step, split)
@@ -109,7 +109,7 @@ class TensorboardLogger(Logger):
         self.writer = SummaryWriter(self.config["cmd"]["logs_dir"])
 
     # TODO: add a model hook for watching gradients.
-    def watch(self, model) -> bool:
+    def watch(self, model, log_freq: int = 1000) -> bool:
         logging.warning("Model gradient logging to tensorboard not yet supported.")
         return False
 
